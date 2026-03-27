@@ -49,6 +49,22 @@ npm start
 
 샌드박스 환경에서는 포트 바인딩이 막혀 `npm start`가 실패할 수 있습니다. 일반 로컬 환경에서는 `http://127.0.0.1:4173`에서 확인하도록 구성했습니다.
 
+## 배포
+GitHub Actions로 GitHub Pages 배포를 하도록 `.github/workflows/deploy-pages.yml`를 추가했습니다.
+
+### Pages 활성화
+GitHub 저장소 설정에서 아래처럼 맞추면 됩니다.
+- **Settings > Pages**
+- **Build and deployment > Source**: `GitHub Actions`
+
+그다음 `main` 브랜치에 push하면 자동으로:
+1. `npm test`
+2. `npm run build`
+3. `dist/` 업로드
+4. GitHub Pages 배포
+
+형태로 배포됩니다.
+
 ## 검증 포인트
 - 각 유형 생성 문제가 실제 규칙과 일치하는지 `tests/problem-engine.test.js`에서 검사합니다.
 - `3자리 덧셈` 설명이 `받아올림 없는 기본형`과 맞는지 메타데이터 테스트로 함께 확인합니다.
