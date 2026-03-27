@@ -123,6 +123,13 @@ input {
   padding: 18px;
 }
 
+.guardian-card,
+.result-focus-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .accent-card {
   background: linear-gradient(135deg, var(--surface-soft), #fff6e7);
 }
@@ -555,6 +562,31 @@ input {
 .small-note {
   margin: 0;
   color: var(--muted);
+}
+
+.summary-list {
+  display: grid;
+  gap: 8px;
+}
+
+.summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(47, 36, 21, 0.05);
+}
+
+.summary-row span,
+.summary-row strong {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.summary-row strong {
+  display: inline;
 }
 
 .type-pill-list {

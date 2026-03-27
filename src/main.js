@@ -9,6 +9,7 @@ import {
   isMixedSessionType
 } from "./constants.js";
 import {
+  createFocusedTypeSession,
   createFreshSession,
   createRetrySession,
   getHintMessage
@@ -17,7 +18,7 @@ import {
   getAccuracy,
   getRecommendedTypeId,
   getRecentSummary,
-  getWeakestTypeId,
+  getWeakestTypeIds,
   loadSnapshot,
   recordSession,
   saveSnapshot
@@ -84,6 +85,14 @@ function getCurrentProblem() {
   return state.session?.problems[state.session.currentIndex] ?? null;
 }
 
+function getSessionMeta(sessionLike) {
+  if (sessionLike?.sessionMeta) {
+    return sessionLike.sessionMeta;
+  }
+
+  return getSessionType(sessionLike?.sessionTypeId ?? DEFAULT_TYPE_ID);
+}
+
 function getSortedTypeEntries(typeCounts) {
   return PRACTICE_TYPE_ORDER.filter((typeId) => typeCounts[typeId]).map((typeId) => [
     typeId,
@@ -117,6 +126,34 @@ function collectPerTypeStats(problems) {
   return Object.values(statsByType);
 }
 
+function getTypeAccuracyFromCounts(typeStat) {
+  if (!typeStat || typeStat.totalAnswered === 0) {
+    return 0;
+  }
+
+  return Math.round((typeStat.totalCorrect / typeStat.totalAnswered) * 100);
+}
+
+function getWeakTypeStats(typeStats, limit = 2) {
+  return [...typeStats]
+    .filter((typeStat) => typeStat.totalAnswered > 0 && typeStat.totalCorrect < typeStat.totalAnswered)
+    .sort((left, right) => {
+      const accuracyGap = getTypeAccuracyFromCounts(left) - getTypeAccuracyFromCounts(right);
+      if (accuracyGap !== 0) {
+        return accuracyGap;
+      }
+
+      const wrongGap =
+        right.totalAnswered - right.totalCorrect - (left.totalAnswered - left.totalCorrect);
+      if (wrongGap !== 0) {
+        return wrongGap;
+      }
+
+      return PRACTICE_TYPE_ORDER.indexOf(left.typeId) - PRACTICE_TYPE_ORDER.indexOf(right.typeId);
+    })
+    .slice(0, limit);
+}
+
 function formatTypeCountText(typeCounts) {
   const entries = getSortedTypeEntries(typeCounts);
 
@@ -145,6 +182,57 @@ function renderTypePills(typeCounts, emptyMessage) {
   `;
 }
 
+function renderAccuracySummary(snapshot) {
+  const attemptedTypes = PRACTICE_TYPES.filter(
+    (type) => snapshot.stats[type.id]?.totalAnswered > 0
+  );
+
+  if (attemptedTypes.length === 0) {
+    return `<p class="small-note">아직 유형별 기록이 없어요.</p>`;
+  }
+
+  return `
+    <div class="summary-list">
+      ${attemptedTypes
+        .map((type) => {
+          const stat = snapshot.stats[type.id];
+
+          return `
+            <div class="summary-row">
+              <span>${type.label}</span>
+              <strong>${getAccuracy(stat)}%</strong>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderWeakTypeReview(typeStats) {
+  if (typeStats.length === 0) {
+    return `<p class="small-note">이번 세션에서는 다시 볼 유형이 없어요.</p>`;
+  }
+
+  return `
+    <div class="summary-list">
+      ${typeStats
+        .map((typeStat) => {
+          const practiceType = getPracticeType(typeStat.typeId);
+          const wrongCount = typeStat.totalAnswered - typeStat.totalCorrect;
+
+          return `
+            <div class="summary-row">
+              <span>${practiceType.label}</span>
+              <strong>${getTypeAccuracyFromCounts(typeStat)}% · ${wrongCount}개 틀림</strong>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function createSessionResult(session) {
   const correctCount = session.problems.filter((problem) => problem.isCorrect).length;
   const wrongProblems = session.problems.filter((problem) => !problem.isCorrect);
@@ -158,6 +246,8 @@ function createSessionResult(session) {
     sessionTypeId: session.sessionTypeId,
     typeId: session.sessionTypeId,
     source: session.source,
+    sessionMeta: getSessionMeta(session),
+    focusedTypeIds: session.focusedTypeIds ?? [],
     correctCount,
     wrongCount: wrongProblems.length,
     totalCount,
@@ -179,6 +269,19 @@ function startFreshSession(typeId) {
   render();
 }
 
+function startFocusedTypeSession(typeIds) {
+  const filteredTypeIds = Array.isArray(typeIds) ? typeIds.filter(Boolean) : [];
+  if (filteredTypeIds.length === 0) {
+    return;
+  }
+
+  state.selectedTypeId = filteredTypeIds[0];
+  state.session = createFocusedTypeSession(filteredTypeIds, SESSION_SIZE);
+  state.lastResult = null;
+  state.view = "practice";
+  render();
+}
+
 function startRetrySession() {
   if (!state.lastResult || state.lastResult.wrongProblems.length === 0) {
     return;
@@ -186,7 +289,8 @@ function startRetrySession() {
 
   state.session = createRetrySession(
     state.lastResult.sessionTypeId,
-    state.lastResult.wrongProblems
+    state.lastResult.wrongProblems,
+    getSessionMeta(state.lastResult)
   );
   state.view = "practice";
   render();
@@ -283,10 +387,13 @@ function renderProblemBoard(problem) {
 
 function renderHome() {
   const recommendedType = getPracticeType(getRecommendedTypeId(state.snapshot));
-  const weakestTypeId = getWeakestTypeId(state.snapshot);
-  const weakestType = weakestTypeId ? getPracticeType(weakestTypeId) : null;
+  const weakestTypeIds = getWeakestTypeIds(state.snapshot, 2);
+  const weakestTypes = weakestTypeIds.map((typeId) => getPracticeType(typeId));
   const recentSummary = getRecentSummary(state.snapshot);
-  const recentType = recentSummary ? getSessionType(recentSummary.sessionTypeId) : null;
+  const recentSessionLabel = recentSummary
+    ? recentSummary.sessionLabel ?? getSessionType(recentSummary.sessionTypeId).label
+    : null;
+  const recentPracticeCount = state.snapshot.history.length;
 
   return `
     <section class="screen hero-screen">
@@ -307,15 +414,28 @@ function renderHome() {
         </article>
 
         <article class="info-card">
-          <p class="card-label">조금 더 하기</p>
-          <strong>${weakestType ? weakestType.label : "아직 기록 없음"}</strong>
-          <p>${weakestType ? "여길 한 번 더 해요." : "처음이면 3자리 덧셈부터 해요."}</p>
+          <p class="card-label">가장 약한 유형</p>
+          <strong>${weakestTypes.length > 0 ? weakestTypes.map((type) => type.label).join(" · ") : "아직 기록 없음"}</strong>
+          <p>${weakestTypes.length > 0 ? "여기부터 다시 보면 좋아요." : "처음이면 3자리 덧셈부터 해요."}</p>
+        </article>
+
+        <article class="info-card">
+          <p class="card-label">최근 연습 횟수</p>
+          <strong>${recentPracticeCount}회</strong>
+          <p>${recentPracticeCount > 0 ? "최근 저장된 연습 기준이에요." : "첫 연습을 시작해요."}</p>
         </article>
 
         <article class="info-card">
           <p class="card-label">마지막 연습</p>
           <strong>${recentSummary ? `${recentSummary.correctCount} / ${recentSummary.totalCount}` : "아직 없음"}</strong>
-          <p>${recentSummary ? `${recentType.label} · ${recentSummary.accuracy}% · ${formatDate(recentSummary.finishedAt)}` : "첫 연습을 시작해요."}</p>
+          <p>${recentSummary ? `${recentSessionLabel} · ${recentSummary.accuracy}% · ${formatDate(recentSummary.finishedAt)}` : "첫 연습을 시작해요."}</p>
+        </article>
+
+        <article class="info-card guardian-card">
+          <p class="card-label">보호자용 짧은 요약</p>
+          <strong>유형별 정답률</strong>
+          <p>약한 유형과 오늘 추천을 빠르게 확인해요.</p>
+          ${renderAccuracySummary(state.snapshot)}
         </article>
       </div>
 
@@ -386,7 +506,7 @@ function renderTypeSelection() {
 
 function renderPractice() {
   const currentProblem = getCurrentProblem();
-  const sessionType = getSessionType(state.session.sessionTypeId);
+  const sessionType = getSessionMeta(state.session);
   const practiceType = getPracticeType(currentProblem.typeId);
   const sessionGroupMeta = GROUP_META[sessionType.group];
   const problemGroupMeta = GROUP_META[practiceType.group];
@@ -491,8 +611,9 @@ function renderWrongProblems(result) {
 }
 
 function renderResult() {
-  const sessionType = getSessionType(state.lastResult.sessionTypeId);
-  const cumulativeStat = isMixedSessionType(sessionType.id)
+  const sessionType = getSessionMeta(state.lastResult);
+  const isMixedLikeSession = isMixedSessionType(state.lastResult.sessionTypeId);
+  const cumulativeStat = isMixedLikeSession
     ? null
     : state.snapshot.stats[sessionType.id];
   const cumulativeAccuracy = cumulativeStat ? getAccuracy(cumulativeStat) : null;
@@ -500,6 +621,19 @@ function renderResult() {
     state.lastResult.wrongCount > 0
       ? `틀린 ${state.lastResult.wrongCount}개만 다시 보면 돼요.`
       : "모두 맞았어요. 다시 풀어도 좋아요.";
+  const weakTypeStats = getWeakTypeStats(state.lastResult.perTypeStats, 2);
+  const primaryWeakType = weakTypeStats[0] ? getPracticeType(weakTypeStats[0].typeId) : null;
+  const sortedWrongTypeIds = getSortedTypeEntries(state.lastResult.wrongTypeBreakdown).map(
+    ([typeId]) => typeId
+  );
+  const mixedModeWeakMessage =
+    isMixedLikeSession && primaryWeakType
+      ? `혼합 모드에서 ${primaryWeakType.label}을 ${
+          weakTypeStats[0].totalAnswered - weakTypeStats[0].totalCorrect
+        }개 틀렸어요.`
+      : primaryWeakType
+        ? `${primaryWeakType.label}을 한 번 더 보면 좋아요.`
+        : "약한 유형 없이 잘 풀었어요.";
 
   return `
     <section class="screen">
@@ -522,11 +656,21 @@ function renderResult() {
         </article>
 
         <article class="info-card">
-          <p class="card-label">${isMixedSessionType(sessionType.id) ? "섞인 유형" : "지금까지"}</p>
-          <strong>${isMixedSessionType(sessionType.id) ? `${Object.keys(state.lastResult.typeBreakdown).length}종류` : `${cumulativeAccuracy}%`}</strong>
-          <p>${isMixedSessionType(sessionType.id) ? formatTypeCountText(state.lastResult.typeBreakdown) : `${cumulativeStat.sessions}번 연습했어요.`}</p>
+          <p class="card-label">${isMixedLikeSession ? "섞인 유형" : "지금까지"}</p>
+          <strong>${isMixedLikeSession ? `${Object.keys(state.lastResult.typeBreakdown).length}종류` : `${cumulativeAccuracy}%`}</strong>
+          <p>${isMixedLikeSession ? formatTypeCountText(state.lastResult.typeBreakdown) : `${cumulativeStat.sessions}번 연습했어요.`}</p>
         </article>
       </div>
+
+      <section class="result-section">
+        <h3>이번에 특히 다시 볼 유형</h3>
+        <article class="info-card result-focus-card">
+          <p class="card-label">이번 세션 약한 유형</p>
+          <strong>${primaryWeakType ? primaryWeakType.label : "모두 잘했어요"}</strong>
+          <p>${mixedModeWeakMessage}</p>
+          ${renderWeakTypeReview(weakTypeStats)}
+        </article>
+      </section>
 
       <section class="result-section">
         <h3>이번에 나온 유형</h3>
@@ -549,7 +693,17 @@ function renderResult() {
             ? `<button class="primary-button" data-action="retry-wrong">틀린 문제 다시</button>`
             : ""
         }
-        <button class="secondary-button" data-action="retry-same">${isMixedSessionType(sessionType.id) ? "같은 모드 다시" : "같은 유형 다시"}</button>
+        ${
+          primaryWeakType
+            ? `<button class="secondary-button" data-action="retry-weak-type" data-type-id="${primaryWeakType.id}">가장 약한 유형 새 문제 10개</button>`
+            : ""
+        }
+        ${
+          sortedWrongTypeIds.length > 1
+            ? `<button class="secondary-button" data-action="retry-wrong-types" data-type-ids="${sortedWrongTypeIds.join(",")}">틀린 유형만 다시</button>`
+            : ""
+        }
+        <button class="secondary-button" data-action="retry-same">${isMixedLikeSession ? "같은 모드 새 문제 10개" : "같은 유형 새 문제 10개"}</button>
         <button class="ghost-button wide-button" data-action="open-type-select">유형 고르기</button>
         <button class="ghost-button wide-button" data-action="go-home">홈</button>
       </div>
@@ -588,6 +742,7 @@ appRoot.addEventListener("click", (event) => {
 
   const action = button.dataset.action;
   const typeId = button.dataset.typeId;
+  const typeIds = button.dataset.typeIds?.split(",") ?? [];
 
   switch (action) {
     case "start-recommended":
@@ -611,7 +766,17 @@ appRoot.addEventListener("click", (event) => {
     case "retry-wrong":
       startRetrySession();
       break;
+    case "retry-weak-type":
+      startFreshSession(typeId);
+      break;
+    case "retry-wrong-types":
+      startFocusedTypeSession(typeIds);
+      break;
     case "retry-same":
+      if (state.lastResult?.source === "focus-types" && state.lastResult.focusedTypeIds.length > 1) {
+        startFocusedTypeSession(state.lastResult.focusedTypeIds);
+        break;
+      }
       startFreshSession(state.lastResult?.sessionTypeId ?? state.selectedTypeId);
       break;
     default:

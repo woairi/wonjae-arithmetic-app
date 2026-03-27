@@ -13,7 +13,7 @@ function createEmptyStat(typeId) {
 
 export function createEmptySnapshot() {
   return {
-    version: 2,
+    version: 3,
     stats: Object.fromEntries(
       PRACTICE_TYPES.map((type) => [type.id, createEmptyStat(type.id)])
     ),
@@ -28,11 +28,13 @@ function normalizeHistoryEntry(entry) {
     id: entry?.id ?? crypto.randomUUID(),
     sessionTypeId,
     typeId: sessionTypeId,
+    sessionLabel: entry?.sessionLabel ?? null,
     accuracy: Number.isFinite(entry?.accuracy) ? entry.accuracy : 0,
     correctCount: Number.isFinite(entry?.correctCount) ? entry.correctCount : 0,
     totalCount: Number.isFinite(entry?.totalCount) ? entry.totalCount : 0,
     finishedAt: entry?.finishedAt ?? null,
     source: entry?.source ?? "fresh",
+    focusedTypeIds: Array.isArray(entry?.focusedTypeIds) ? entry.focusedTypeIds : [],
     wrongTypeIds: Array.isArray(entry?.wrongTypeIds) ? entry.wrongTypeIds : [],
     typeBreakdown:
       entry?.typeBreakdown && typeof entry.typeBreakdown === "object" ? entry.typeBreakdown : {},
@@ -61,7 +63,7 @@ function normalizeSnapshot(rawSnapshot) {
   });
 
   return {
-    version: 2,
+    version: 3,
     stats: nextStats,
     history: Array.isArray(rawSnapshot.history)
       ? rawSnapshot.history.slice(0, 20).map(normalizeHistoryEntry)
@@ -111,11 +113,13 @@ export function recordSession(snapshot, sessionResult) {
     id: sessionResult.id,
     sessionTypeId: sessionResult.sessionTypeId,
     typeId: sessionResult.sessionTypeId,
+    sessionLabel: sessionResult.sessionMeta?.label ?? null,
     accuracy: sessionResult.accuracy,
     correctCount: sessionResult.correctCount,
     totalCount: sessionResult.totalCount,
     finishedAt: sessionResult.finishedAt,
     source: sessionResult.source,
+    focusedTypeIds: sessionResult.focusedTypeIds ?? [],
     wrongTypeIds: sessionResult.wrongTypeIds,
     typeBreakdown: sessionResult.typeBreakdown,
     wrongTypeBreakdown: sessionResult.wrongTypeBreakdown
@@ -126,12 +130,14 @@ export function recordSession(snapshot, sessionResult) {
 }
 
 export function getWeakestTypeId(snapshot) {
-  const attemptedStats = Object.values(snapshot.stats).filter(
-    (stat) => stat.totalAnswered > 0
-  );
+  return getWeakestTypeIds(snapshot, 1)[0] ?? null;
+}
+
+export function getWeakestTypeIds(snapshot, limit = 2) {
+  const attemptedStats = Object.values(snapshot.stats).filter((stat) => stat.totalAnswered > 0);
 
   if (attemptedStats.length === 0) {
-    return null;
+    return [];
   }
 
   return attemptedStats
@@ -140,9 +146,15 @@ export function getWeakestTypeId(snapshot) {
       if (accuracyGap !== 0) {
         return accuracyGap;
       }
+      const wrongGap =
+        right.totalAnswered - right.totalCorrect - (left.totalAnswered - left.totalCorrect);
+      if (wrongGap !== 0) {
+        return wrongGap;
+      }
       return (left.lastPracticedAt ?? "").localeCompare(right.lastPracticedAt ?? "");
-    })[0]
-    .typeId;
+    })
+    .slice(0, limit)
+    .map((stat) => stat.typeId);
 }
 
 export function getRecommendedTypeId(snapshot) {

@@ -4,8 +4,10 @@ import assert from "node:assert/strict";
 import {
   analyzeAddition,
   analyzeSubtraction,
+  createFocusedTypeSession,
   createFreshSession,
   generateProblem,
+  getHintMessage,
   isValidForType
 } from "../src/problem-engine.js";
 import {
@@ -60,6 +62,43 @@ test("mixed-all session keeps actual problem types valid and visible", () => {
   session.problems.forEach((problem) => {
     assert.equal(isValidForType(problem, problem.typeId), true);
   });
+});
+
+test("focused retry session only uses requested wrong types", () => {
+  const focusedTypeIds = ["addition-carry-2", "subtraction-borrow-1"];
+  const session = createFocusedTypeSession(focusedTypeIds, 10);
+  const seenTypeIds = new Set(session.problems.map((problem) => problem.typeId));
+
+  assert.equal(session.source, "focus-types");
+  assert.equal(session.sessionMeta.label, "틀린 유형만 다시");
+  focusedTypeIds.forEach((typeId) => {
+    assert.equal(seenTypeIds.has(typeId), true);
+  });
+
+  session.problems.forEach((problem) => {
+    assert.equal(focusedTypeIds.includes(problem.typeId), true);
+    assert.equal(isValidForType(problem, problem.typeId), true);
+  });
+});
+
+test("hint message stays short but points to carry and borrow positions", () => {
+  assert.equal(
+    getHintMessage({
+      typeId: "addition-carry-2",
+      operator: "+",
+      analysis: { carryPositions: ["일의 자리", "십의 자리"], borrowPositions: [] }
+    }),
+    "일, 십 자리 올림 다시."
+  );
+
+  assert.equal(
+    getHintMessage({
+      typeId: "subtraction-borrow-1",
+      operator: "-",
+      analysis: { carryPositions: [], borrowPositions: ["일의 자리"] }
+    }),
+    "일 자리 내림 다시."
+  );
 });
 
 test("practice type copy stays aligned with rule-critical distinctions", () => {

@@ -3,11 +3,17 @@ import {
   MIXED_ALL_TYPE_ID,
   PRACTICE_TYPES,
   SESSION_SIZE,
-  getPracticeType
+  getPracticeType,
+  getSessionType
 } from "./constants.js";
 
 const POSITION_LABELS = ["일의 자리", "십의 자리", "백의 자리"];
 const PRACTICE_TYPE_IDS = PRACTICE_TYPES.map((type) => type.id);
+const POSITION_SHORT_LABELS = {
+  "일의 자리": "일",
+  "십의 자리": "십",
+  "백의 자리": "백"
+};
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -289,12 +295,44 @@ export function buildMixedTypeSequence(size = SESSION_SIZE) {
   return shuffle([...guaranteedTypes, ...extraTypes]);
 }
 
+function normalizePracticeTypeIds(typeIds) {
+  if (!Array.isArray(typeIds)) {
+    return [];
+  }
+
+  return [...new Set(typeIds)].filter((typeId) => PRACTICE_TYPE_IDS.includes(typeId));
+}
+
+export function buildFocusedTypeSequence(typeIds, size = SESSION_SIZE) {
+  const normalizedTypeIds = normalizePracticeTypeIds(typeIds);
+
+  if (normalizedTypeIds.length === 0 || size <= 0) {
+    return [];
+  }
+
+  const guaranteedTypes =
+    size >= normalizedTypeIds.length
+      ? shuffle(normalizedTypeIds)
+      : shuffle(normalizedTypeIds).slice(0, size);
+  const remainingCount = Math.max(size - guaranteedTypes.length, 0);
+  const extraTypes = Array.from(
+    { length: remainingCount },
+    () => normalizedTypeIds[randomInt(0, normalizedTypeIds.length - 1)]
+  );
+
+  return shuffle([...guaranteedTypes, ...extraTypes]);
+}
+
 export function generateSessionProblems(typeId, size = SESSION_SIZE) {
   if (typeId === MIXED_ALL_TYPE_ID) {
     return buildMixedTypeSequence(size).map((actualTypeId) => generateProblem(actualTypeId));
   }
 
   return Array.from({ length: size }, () => generateProblem(typeId));
+}
+
+export function generateFocusedTypeProblems(typeIds, size = SESSION_SIZE) {
+  return buildFocusedTypeSequence(typeIds, size).map((actualTypeId) => generateProblem(actualTypeId));
 }
 
 export function resetProblemForRetry(problem) {
@@ -323,17 +361,52 @@ export function createFreshSession(typeId, size = SESSION_SIZE) {
     sessionTypeId: typeId,
     typeId,
     source: "fresh",
+    sessionMeta: getSessionType(typeId),
+    focusedTypeIds: [],
     problems: generateSessionProblems(typeId, size).map(enrichProblem),
     currentIndex: 0,
     validationMessage: ""
   };
 }
 
-export function createRetrySession(sessionTypeId, problems) {
+export function createFocusedTypeSession(typeIds, size = SESSION_SIZE) {
+  const normalizedTypeIds = normalizePracticeTypeIds(typeIds);
+  const fallbackTypeId = normalizedTypeIds[0] ?? DEFAULT_TYPE_ID;
+  const practiceType = getPracticeType(fallbackTypeId);
+  const isSingleType = normalizedTypeIds.length <= 1;
+
+  return {
+    sessionTypeId: isSingleType ? fallbackTypeId : MIXED_ALL_TYPE_ID,
+    typeId: isSingleType ? fallbackTypeId : MIXED_ALL_TYPE_ID,
+    source: "focus-types",
+    sessionMeta: isSingleType
+      ? practiceType
+      : {
+          id: `focus-${normalizedTypeIds.join("-")}`,
+          group: "섞어 풀기",
+          label: "틀린 유형만 다시",
+          description: "방금 틀린 실제 유형만 다시 나와요.",
+          summary: "틀린 실제 유형 다시 연습",
+          cardRule: "오답 유형",
+          hint: "이번 문제의 실제 유형을 보고 풀어요."
+        },
+    focusedTypeIds: normalizedTypeIds,
+    problems: generateFocusedTypeProblems(
+      normalizedTypeIds.length > 0 ? normalizedTypeIds : [fallbackTypeId],
+      size
+    ).map(enrichProblem),
+    currentIndex: 0,
+    validationMessage: ""
+  };
+}
+
+export function createRetrySession(sessionTypeId, problems, sessionMeta = getSessionType(sessionTypeId)) {
   return {
     sessionTypeId,
     typeId: sessionTypeId,
     source: "retry",
+    sessionMeta,
+    focusedTypeIds: [],
     problems: problems.map(resetProblemForRetry),
     currentIndex: 0,
     validationMessage: ""
@@ -352,5 +425,9 @@ export function getHintMessage(problem) {
   }
 
   const action = problem.operator === "+" ? "올림" : "내림";
-  return `${positions.join(", ")} ${action}을 다시 봐요.`;
+  const shortPositions = positions.map(
+    (position) => POSITION_SHORT_LABELS[position] ?? position.replace("의 자리", "")
+  );
+
+  return `${shortPositions.join(", ")} 자리 ${action} 다시.`;
 }
