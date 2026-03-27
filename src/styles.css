@@ -401,11 +401,25 @@ input {
   font-size: 0.95rem;
 }
 
-.hint-toggle {
-  min-width: 112px;
+.hint-level-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.hint-level-button {
+  min-width: 72px;
   min-height: 48px;
   padding: 10px 14px;
   background: rgba(255, 255, 255, 0.92);
+  font-size: 0.95rem;
+}
+
+.hint-level-active {
+  background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+  color: #fff;
+  box-shadow: 0 10px 20px rgba(34, 112, 216, 0.2);
 }
 
 .board-focus-note {
@@ -642,6 +656,15 @@ input {
     linear-gradient(135deg, rgba(255, 240, 212, 1), rgba(223, 241, 255, 1));
 }
 
+.result-recommend-card {
+  gap: 10px;
+}
+
+.result-primary-action {
+  width: 100%;
+  margin-top: 6px;
+}
+
 .wrong-card {
   display: flex;
   flex-direction: column;
@@ -755,6 +778,14 @@ input {
   .history-card-top {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .hint-level-row {
+    justify-content: stretch;
+  }
+
+  .hint-level-button {
+    flex: 1 1 calc(33.333% - 8px);
   }
 
   .type-card-top {

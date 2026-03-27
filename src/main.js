@@ -15,6 +15,16 @@ import {
   getHintMessage
 } from "./problem-engine.js";
 import {
+  HINT_LEVELS,
+  buildResultRecommendation,
+  getBoardFocusText,
+  getHintFocusPositions,
+  getHintHelperMessage,
+  getHintToolbarCopy,
+  getTypeAccuracyFromCounts,
+  getWeakTypeStats
+} from "./learning-support.js";
+import {
   getAccuracy,
   getRecommendedTypeId,
   getRecentSummary,
@@ -56,7 +66,7 @@ const GROUP_META = {
 const state = {
   view: "home",
   selectedTypeId: DEFAULT_TYPE_ID,
-  showHints: true,
+  hintLevel: 1,
   snapshot: loadSnapshot(),
   session: null,
   lastResult: null
@@ -132,34 +142,6 @@ function collectPerTypeStats(problems) {
   return Object.values(statsByType);
 }
 
-function getTypeAccuracyFromCounts(typeStat) {
-  if (!typeStat || typeStat.totalAnswered === 0) {
-    return 0;
-  }
-
-  return Math.round((typeStat.totalCorrect / typeStat.totalAnswered) * 100);
-}
-
-function getWeakTypeStats(typeStats, limit = 2) {
-  return [...typeStats]
-    .filter((typeStat) => typeStat.totalAnswered > 0 && typeStat.totalCorrect < typeStat.totalAnswered)
-    .sort((left, right) => {
-      const accuracyGap = getTypeAccuracyFromCounts(left) - getTypeAccuracyFromCounts(right);
-      if (accuracyGap !== 0) {
-        return accuracyGap;
-      }
-
-      const wrongGap =
-        right.totalAnswered - right.totalCorrect - (left.totalAnswered - left.totalCorrect);
-      if (wrongGap !== 0) {
-        return wrongGap;
-      }
-
-      return PRACTICE_TYPE_ORDER.indexOf(left.typeId) - PRACTICE_TYPE_ORDER.indexOf(right.typeId);
-    })
-    .slice(0, limit);
-}
-
 function formatTypeCountText(typeCounts) {
   const entries = getSortedTypeEntries(typeCounts);
 
@@ -170,36 +152,6 @@ function formatTypeCountText(typeCounts) {
   return entries
     .map(([typeId, count]) => `${getPracticeType(typeId).label} ${count}문제`)
     .join(" · ");
-}
-
-function getProblemFocusPositions(problem) {
-  if (!problem?.analysis) {
-    return [];
-  }
-
-  return problem.operator === "+"
-    ? problem.analysis.carryPositions
-    : problem.analysis.borrowPositions;
-}
-
-function getProblemFocusText(problem, variant = "look") {
-  const practiceType = getPracticeType(problem.typeId);
-  const positions = getProblemFocusPositions(problem);
-
-  if (positions.length === 0) {
-    return variant === "wrong"
-      ? "자리만 다시 맞춰 보면 돼요."
-      : practiceType.hint;
-  }
-
-  const shortPositions = positions.map((position) => position.replace("의 자리", ""));
-  const action = problem.operator === "+" ? "올림" : "내림";
-
-  if (variant === "wrong") {
-    return `틀린 자리 포인트: ${shortPositions.join(", ")} 자리 ${action}`;
-  }
-
-  return `먼저 볼 자리: ${shortPositions.join(", ")} 자리 ${action}`;
 }
 
 function getHistoryModeLabel(entry) {
@@ -254,6 +206,27 @@ function renderAccuracySummary(snapshot) {
         })
         .join("")}
     </div>
+  `;
+}
+
+function getActionSignature(action) {
+  return [
+    action.action,
+    action.typeId ?? "",
+    Array.isArray(action.typeIds) ? action.typeIds.join(",") : ""
+  ].join("|");
+}
+
+function renderActionButton(action, className = "secondary-button") {
+  return `
+    <button
+      class="${className}"
+      data-action="${action.action}"
+      ${action.typeId ? `data-type-id="${action.typeId}"` : ""}
+      ${action.typeIds?.length ? `data-type-ids="${action.typeIds.join(",")}"` : ""}
+    >
+      ${action.label}
+    </button>
   `;
 }
 
@@ -414,9 +387,9 @@ function renderProblemBoard(problem) {
   const fullPlaceLabels = FULL_PLACE_LABELS.slice(FULL_PLACE_LABELS.length - digitCount);
   const leftDigits = String(problem.left).padStart(digitCount, " ").split("");
   const rightDigits = String(problem.right).padStart(digitCount, " ").split("");
-  const focusPositions = new Set(state.showHints ? getProblemFocusPositions(problem) : []);
+  const focusPositions = new Set(getHintFocusPositions(problem, state.hintLevel));
   const showStrongFocus =
-    state.showHints && problem.submitted && !problem.isCorrect && focusPositions.size > 0;
+    state.hintLevel > 0 && problem.submitted && !problem.isCorrect && focusPositions.size > 0;
 
   function getFocusClass(index) {
     if (!focusPositions.has(fullPlaceLabels[index])) {
@@ -434,7 +407,7 @@ function renderProblemBoard(problem) {
   }
 
   return `
-    <div class="problem-board ${state.showHints ? "problem-board-hints" : ""} ${showStrongFocus ? "problem-board-wrong-focus" : ""}" style="--digit-columns: ${digitCount}">
+    <div class="problem-board ${state.hintLevel > 0 ? "problem-board-hints" : ""} ${showStrongFocus ? "problem-board-wrong-focus" : ""}" style="--digit-columns: ${digitCount}">
       <div class="place-row">
         <span class="operator-space"></span>
         ${placeLabels
@@ -581,12 +554,10 @@ function renderPractice() {
   const practiceType = getPracticeType(currentProblem.typeId);
   const sessionGroupMeta = GROUP_META[sessionType.group];
   const problemGroupMeta = GROUP_META[practiceType.group];
-  const helperMessage = state.showHints
-    ? practiceType.hint
-    : "힌트를 숨겼어요. 먼저 혼자 풀어봐요.";
+  const helperMessage = getHintHelperMessage(currentProblem, state.hintLevel);
   const boardFocusText = currentProblem.submitted && !currentProblem.isCorrect
-    ? getProblemFocusText(currentProblem, "wrong")
-    : getProblemFocusText(currentProblem, "look");
+    ? getBoardFocusText(currentProblem, state.hintLevel, "wrong")
+    : getBoardFocusText(currentProblem, state.hintLevel, "look");
 
   return `
     <section class="screen">
@@ -626,15 +597,25 @@ function renderPractice() {
         <div class="hint-toolbar">
           <div>
             <p class="card-label">세로셈 힌트</p>
-            <p class="hint-copy">${state.showHints ? "자리 포인트를 보드에 같이 보여줘요." : "자리 강조를 숨기고 풀어요."}</p>
+            <p class="hint-copy">${getHintToolbarCopy(state.hintLevel)}</p>
           </div>
-          <button class="ghost-button hint-toggle" data-action="toggle-hints">
-            ${state.showHints ? "힌트 숨기기" : "힌트 보기"}
-          </button>
+          <div class="hint-level-row">
+            ${HINT_LEVELS.map(
+              (level) => `
+                <button
+                  class="ghost-button hint-level-button ${state.hintLevel === level.value ? "hint-level-active" : ""}"
+                  data-action="set-hint-level"
+                  data-hint-level="${level.value}"
+                >
+                  ${level.label}
+                </button>
+              `
+            ).join("")}
+          </div>
         </div>
 
         ${
-          state.showHints
+          state.hintLevel > 0
             ? `<p class="board-focus-note ${currentProblem.submitted && !currentProblem.isCorrect ? "board-focus-note-wrong" : ""}">${boardFocusText}</p>`
             : ""
         }
@@ -660,7 +641,7 @@ function renderPractice() {
           ${
             currentProblem.submitted
               ? `<div class="feedback-banner ${currentProblem.isCorrect ? "feedback-correct" : "feedback-wrong"}">${currentProblem.feedback}</div>`
-              : `<p class="helper-copy ${state.showHints ? "" : "helper-copy-muted"}">${helperMessage}</p>`
+              : `<p class="helper-copy ${state.hintLevel > 0 ? "" : "helper-copy-muted"}">${helperMessage}</p>`
           }
           <button class="primary-button" type="submit">
             ${currentProblem.submitted
@@ -794,6 +775,41 @@ function renderResult() {
   const sortedWrongTypeIds = getSortedTypeEntries(state.lastResult.wrongTypeBreakdown).map(
     ([typeId]) => typeId
   );
+  const recommendation = buildResultRecommendation(state.lastResult, state.snapshot);
+  const recommendedAction = {
+    label: recommendation.ctaLabel,
+    action: recommendation.action,
+    typeId: recommendation.typeId,
+    typeIds: recommendation.typeIds
+  };
+  const alternateActions = [
+    state.lastResult.wrongProblems.length > 0
+      ? { label: "틀린 문제 다시", action: "retry-wrong" }
+      : null,
+    primaryWeakType
+      ? {
+          label: `${primaryWeakType.label} 새 문제 10개`,
+          action: "start-type",
+          typeId: primaryWeakType.id
+        }
+      : null,
+    sortedWrongTypeIds.length > 1
+      ? {
+          label: "틀린 유형만 다시",
+          action: "retry-wrong-types",
+          typeIds: sortedWrongTypeIds
+        }
+      : null,
+    {
+      label: isMixedLikeSession ? "같은 모드 새 문제 10개" : "같은 유형 새 문제 10개",
+      action: "retry-same"
+    },
+    { label: "유형 고르기", action: "open-type-select" },
+    { label: "홈", action: "go-home" }
+  ].filter(Boolean);
+  const secondaryActions = alternateActions.filter(
+    (action) => getActionSignature(action) !== getActionSignature(recommendedAction)
+  );
   const mixedModeWeakMessage =
     isMixedLikeSession && primaryWeakType
       ? `혼합 모드에서 ${primaryWeakType.label}을 ${
@@ -831,6 +847,16 @@ function renderResult() {
       </div>
 
       <section class="result-section">
+        <h3>다음 추천</h3>
+        <article class="info-card result-focus-card result-recommend-card">
+          <p class="card-label">다음 연습</p>
+          <strong>${recommendation.title}</strong>
+          <p>${recommendation.message}</p>
+          ${renderActionButton(recommendedAction, "primary-button result-primary-action")}
+        </article>
+      </section>
+
+      <section class="result-section">
         <h3>이번에 특히 다시 볼 유형</h3>
         <article class="info-card result-focus-card">
           <p class="card-label">이번 세션 약한 유형</p>
@@ -856,24 +882,16 @@ function renderResult() {
       </section>
 
       <div class="bottom-cta stacked-actions">
-        ${
-          state.lastResult.wrongProblems.length > 0
-            ? `<button class="primary-button" data-action="retry-wrong">틀린 문제 다시</button>`
-            : ""
-        }
-        ${
-          primaryWeakType
-            ? `<button class="secondary-button" data-action="retry-weak-type" data-type-id="${primaryWeakType.id}">가장 약한 유형 새 문제 10개</button>`
-            : ""
-        }
-        ${
-          sortedWrongTypeIds.length > 1
-            ? `<button class="secondary-button" data-action="retry-wrong-types" data-type-ids="${sortedWrongTypeIds.join(",")}">틀린 유형만 다시</button>`
-            : ""
-        }
-        <button class="secondary-button" data-action="retry-same">${isMixedLikeSession ? "같은 모드 새 문제 10개" : "같은 유형 새 문제 10개"}</button>
-        <button class="ghost-button wide-button" data-action="open-type-select">유형 고르기</button>
-        <button class="ghost-button wide-button" data-action="go-home">홈</button>
+        ${secondaryActions
+          .map((action) =>
+            renderActionButton(
+              action,
+              action.action === "open-type-select" || action.action === "go-home"
+                ? "ghost-button wide-button"
+                : "secondary-button"
+            )
+          )
+          .join("")}
       </div>
     </section>
   `;
@@ -940,7 +958,7 @@ appRoot.addEventListener("click", (event) => {
     case "retry-wrong":
       startRetrySession();
       break;
-    case "retry-weak-type":
+    case "start-type":
       startFreshSession(typeId);
       break;
     case "retry-wrong-types":
@@ -953,8 +971,8 @@ appRoot.addEventListener("click", (event) => {
       }
       startFreshSession(state.lastResult?.sessionTypeId ?? state.selectedTypeId);
       break;
-    case "toggle-hints":
-      state.showHints = !state.showHints;
+    case "set-hint-level":
+      state.hintLevel = Number(button.dataset.hintLevel ?? 0);
       render();
       break;
     default:
