@@ -2,8 +2,11 @@ import {
   DEFAULT_TYPE_ID,
   PLACE_LABELS,
   PRACTICE_TYPES,
+  SESSION_TYPE_OPTIONS,
   SESSION_SIZE,
-  getPracticeType
+  getPracticeType,
+  getSessionType,
+  isMixedSessionType
 } from "./constants.js";
 import {
   createFreshSession,
@@ -21,12 +24,19 @@ import {
 } from "./storage.js";
 
 const appRoot = document.querySelector("#app");
-const groupedTypes = PRACTICE_TYPES.reduce((groups, type) => {
+const groupedTypes = SESSION_TYPE_OPTIONS.reduce((groups, type) => {
   groups[type.group] ??= [];
   groups[type.group].push(type);
   return groups;
 }, {});
+const PRACTICE_TYPE_ORDER = PRACTICE_TYPES.map((type) => type.id);
 const GROUP_META = {
+  "섞어 풀기": {
+    lead: "여러 유형",
+    detail: "5개 실제 유형이 섞여 나와요.",
+    chip: "랜덤",
+    className: "group-mixed"
+  },
   덧셈: {
     lead: "더하는 문제",
     detail: "받아올림을 보고 골라요.",
@@ -74,21 +84,89 @@ function getCurrentProblem() {
   return state.session?.problems[state.session.currentIndex] ?? null;
 }
 
+function getSortedTypeEntries(typeCounts) {
+  return PRACTICE_TYPE_ORDER.filter((typeId) => typeCounts[typeId]).map((typeId) => [
+    typeId,
+    typeCounts[typeId]
+  ]);
+}
+
+function countProblemsByType(problems) {
+  return problems.reduce((counts, problem) => {
+    counts[problem.typeId] = (counts[problem.typeId] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function collectPerTypeStats(problems) {
+  const statsByType = {};
+
+  problems.forEach((problem) => {
+    statsByType[problem.typeId] ??= {
+      typeId: problem.typeId,
+      totalAnswered: 0,
+      totalCorrect: 0
+    };
+
+    statsByType[problem.typeId].totalAnswered += 1;
+    if (problem.isCorrect) {
+      statsByType[problem.typeId].totalCorrect += 1;
+    }
+  });
+
+  return Object.values(statsByType);
+}
+
+function formatTypeCountText(typeCounts) {
+  const entries = getSortedTypeEntries(typeCounts);
+
+  if (entries.length === 0) {
+    return "없음";
+  }
+
+  return entries
+    .map(([typeId, count]) => `${getPracticeType(typeId).label} ${count}문제`)
+    .join(" · ");
+}
+
+function renderTypePills(typeCounts, emptyMessage) {
+  const entries = getSortedTypeEntries(typeCounts);
+
+  if (entries.length === 0) {
+    return `<p class="small-note">${emptyMessage}</p>`;
+  }
+
+  return `
+    <div class="type-pill-list">
+      ${entries
+        .map(([typeId, count]) => `<span class="type-pill">${getPracticeType(typeId).label} ${count}</span>`)
+        .join("")}
+    </div>
+  `;
+}
+
 function createSessionResult(session) {
   const correctCount = session.problems.filter((problem) => problem.isCorrect).length;
   const wrongProblems = session.problems.filter((problem) => !problem.isCorrect);
   const totalCount = session.problems.length;
   const accuracy = Math.round((correctCount / totalCount) * 100);
+  const typeBreakdown = countProblemsByType(session.problems);
+  const wrongTypeBreakdown = countProblemsByType(wrongProblems);
 
   return {
     id: crypto.randomUUID(),
-    typeId: session.typeId,
+    sessionTypeId: session.sessionTypeId,
+    typeId: session.sessionTypeId,
     source: session.source,
     correctCount,
     wrongCount: wrongProblems.length,
     totalCount,
     accuracy,
     wrongProblems,
+    wrongTypeIds: Object.keys(wrongTypeBreakdown),
+    typeBreakdown,
+    wrongTypeBreakdown,
+    perTypeStats: collectPerTypeStats(session.problems),
     finishedAt: new Date().toISOString()
   };
 }
@@ -106,7 +184,10 @@ function startRetrySession() {
     return;
   }
 
-  state.session = createRetrySession(state.lastResult.typeId, state.lastResult.wrongProblems);
+  state.session = createRetrySession(
+    state.lastResult.sessionTypeId,
+    state.lastResult.wrongProblems
+  );
   state.view = "practice";
   render();
 }
@@ -116,10 +197,7 @@ function finishSession() {
   state.snapshot = recordSession(state.snapshot, sessionResult);
   saveSnapshot(state.snapshot);
 
-  state.lastResult = {
-    ...sessionResult,
-    cumulativeStat: state.snapshot.stats[sessionResult.typeId]
-  };
+  state.lastResult = sessionResult;
   state.session = null;
   state.view = "result";
   render();
@@ -208,7 +286,7 @@ function renderHome() {
   const weakestTypeId = getWeakestTypeId(state.snapshot);
   const weakestType = weakestTypeId ? getPracticeType(weakestTypeId) : null;
   const recentSummary = getRecentSummary(state.snapshot);
-  const recentType = recentSummary ? getPracticeType(recentSummary.typeId) : null;
+  const recentType = recentSummary ? getSessionType(recentSummary.sessionTypeId) : null;
 
   return `
     <section class="screen hero-screen">
@@ -258,7 +336,7 @@ function renderTypeSelection() {
 
       <header class="section-header">
         <h2>오늘 풀 문제를 골라요.</h2>
-        <p>한 번에 한 가지씩 연습해요.</p>
+        <p>한 가지씩 또는 섞어서 연습해요.</p>
       </header>
 
       ${Object.entries(groupedTypes)
@@ -308,8 +386,10 @@ function renderTypeSelection() {
 
 function renderPractice() {
   const currentProblem = getCurrentProblem();
-  const practiceType = getPracticeType(state.session.typeId);
-  const groupMeta = GROUP_META[practiceType.group];
+  const sessionType = getSessionType(state.session.sessionTypeId);
+  const practiceType = getPracticeType(currentProblem.typeId);
+  const sessionGroupMeta = GROUP_META[sessionType.group];
+  const problemGroupMeta = GROUP_META[practiceType.group];
 
   return `
     <section class="screen">
@@ -319,13 +399,13 @@ function renderPractice() {
       </div>
 
       <div class="progress-card">
-        <article class="practice-focus ${groupMeta?.className ?? ""}">
+        <article class="practice-focus ${sessionGroupMeta?.className ?? ""}">
           <div class="type-card-top">
-            <span class="type-chip">${groupMeta?.chip ?? practiceType.group}</span>
-            <span class="rule-chip">${practiceType.cardRule}</span>
+            <span class="type-chip">${sessionGroupMeta?.chip ?? sessionType.group}</span>
+            <span class="rule-chip">${sessionType.cardRule}</span>
           </div>
-          <strong>${practiceType.label}</strong>
-          <p>${practiceType.description}</p>
+          <strong>${sessionType.label}</strong>
+          <p>${sessionType.description}</p>
         </article>
         <article class="count-card">
           <p class="card-label">문제</p>
@@ -336,7 +416,12 @@ function renderPractice() {
 
       <div class="problem-card">
         <div class="problem-meta">
-          <p class="card-label">식</p>
+          <p class="card-label">이번 문제 실제 유형</p>
+          <div class="type-card-top ${problemGroupMeta?.className ?? ""}">
+            <span class="type-chip">${problemGroupMeta?.chip ?? practiceType.group}</span>
+            <span class="rule-chip">${practiceType.cardRule}</span>
+          </div>
+          <p class="problem-type-name">${practiceType.label}</p>
           <strong>${currentProblem.left} ${currentProblem.operator} ${currentProblem.right}</strong>
           <p>${practiceType.summary}</p>
         </div>
@@ -385,22 +470,32 @@ function renderWrongProblems(result) {
   return `
     <div class="wrong-list">
       ${result.wrongProblems
-        .map(
-          (problem) => `
+        .map((problem) => {
+          const practiceType = getPracticeType(problem.typeId);
+          const groupMeta = GROUP_META[practiceType.group];
+
+          return `
             <article class="wrong-card">
+              <div class="type-card-top ${groupMeta?.className ?? ""}">
+                <span class="type-chip">${groupMeta?.chip ?? practiceType.group}</span>
+                <span class="rule-chip">${practiceType.label}</span>
+              </div>
               <strong>${problem.left} ${problem.operator} ${problem.right} = ${problem.answer}</strong>
               <span>${getHintMessage(problem)}</span>
             </article>
-          `
-        )
+          `;
+        })
         .join("")}
     </div>
   `;
 }
 
 function renderResult() {
-  const practiceType = getPracticeType(state.lastResult.typeId);
-  const cumulativeAccuracy = getAccuracy(state.lastResult.cumulativeStat);
+  const sessionType = getSessionType(state.lastResult.sessionTypeId);
+  const cumulativeStat = isMixedSessionType(sessionType.id)
+    ? null
+    : state.snapshot.stats[sessionType.id];
+  const cumulativeAccuracy = cumulativeStat ? getAccuracy(cumulativeStat) : null;
   const wrongCountMessage =
     state.lastResult.wrongCount > 0
       ? `틀린 ${state.lastResult.wrongCount}개만 다시 보면 돼요.`
@@ -414,7 +509,7 @@ function renderResult() {
       </div>
 
       <div class="result-hero">
-        <p class="eyebrow">${practiceType.label}</p>
+        <p class="eyebrow">${sessionType.label}</p>
         <h2>${state.lastResult.correctCount}개 맞았어요</h2>
         <p>${wrongCountMessage}</p>
       </div>
@@ -427,11 +522,21 @@ function renderResult() {
         </article>
 
         <article class="info-card">
-          <p class="card-label">지금까지</p>
-          <strong>${cumulativeAccuracy}%</strong>
-          <p>${state.lastResult.cumulativeStat.sessions}번 연습했어요.</p>
+          <p class="card-label">${isMixedSessionType(sessionType.id) ? "섞인 유형" : "지금까지"}</p>
+          <strong>${isMixedSessionType(sessionType.id) ? `${Object.keys(state.lastResult.typeBreakdown).length}종류` : `${cumulativeAccuracy}%`}</strong>
+          <p>${isMixedSessionType(sessionType.id) ? formatTypeCountText(state.lastResult.typeBreakdown) : `${cumulativeStat.sessions}번 연습했어요.`}</p>
         </article>
       </div>
+
+      <section class="result-section">
+        <h3>이번에 나온 유형</h3>
+        ${renderTypePills(state.lastResult.typeBreakdown, "이번 유형 정보가 없어요.")}
+      </section>
+
+      <section class="result-section">
+        <h3>틀린 유형</h3>
+        ${renderTypePills(state.lastResult.wrongTypeBreakdown, "틀린 유형이 없어요.")}
+      </section>
 
       <section class="result-section">
         <h3>틀린 문제</h3>
@@ -444,7 +549,7 @@ function renderResult() {
             ? `<button class="primary-button" data-action="retry-wrong">틀린 문제 다시</button>`
             : ""
         }
-        <button class="secondary-button" data-action="retry-same">같은 유형 다시</button>
+        <button class="secondary-button" data-action="retry-same">${isMixedSessionType(sessionType.id) ? "같은 모드 다시" : "같은 유형 다시"}</button>
         <button class="ghost-button wide-button" data-action="open-type-select">유형 고르기</button>
         <button class="ghost-button wide-button" data-action="go-home">홈</button>
       </div>
@@ -507,7 +612,7 @@ appRoot.addEventListener("click", (event) => {
       startRetrySession();
       break;
     case "retry-same":
-      startFreshSession(state.lastResult?.typeId ?? state.selectedTypeId);
+      startFreshSession(state.lastResult?.sessionTypeId ?? state.selectedTypeId);
       break;
     default:
       break;

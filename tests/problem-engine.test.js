@@ -4,10 +4,16 @@ import assert from "node:assert/strict";
 import {
   analyzeAddition,
   analyzeSubtraction,
+  createFreshSession,
   generateProblem,
   isValidForType
 } from "../src/problem-engine.js";
-import { PRACTICE_TYPES, getPracticeType } from "../src/constants.js";
+import {
+  MIXED_ALL_TYPE_ID,
+  PRACTICE_TYPES,
+  getPracticeType,
+  getSessionType
+} from "../src/constants.js";
 
 test("addition analysis counts carries correctly", () => {
   assert.deepEqual(analyzeAddition(123, 245).carryPositions, []);
@@ -40,6 +46,22 @@ test("every generated problem matches its declared type", () => {
   });
 });
 
+test("mixed-all session keeps actual problem types valid and visible", () => {
+  const session = createFreshSession(MIXED_ALL_TYPE_ID, 10);
+  const seenTypeIds = new Set(session.problems.map((problem) => problem.typeId));
+
+  assert.equal(session.sessionTypeId, MIXED_ALL_TYPE_ID);
+  assert.equal(session.problems.length, 10);
+
+  PRACTICE_TYPES.forEach((practiceType) => {
+    assert.equal(seenTypeIds.has(practiceType.id), true);
+  });
+
+  session.problems.forEach((problem) => {
+    assert.equal(isValidForType(problem, problem.typeId), true);
+  });
+});
+
 test("practice type copy stays aligned with rule-critical distinctions", () => {
   const basicAddition = getPracticeType("addition-basic");
   assert.equal(basicAddition.description.includes("받아올림 없이"), true);
@@ -49,4 +71,5 @@ test("practice type copy stays aligned with rule-critical distinctions", () => {
   assert.equal(getPracticeType("addition-carry-3").cardRule, "일, 십, 백");
   assert.equal(getPracticeType("subtraction-borrow-1").cardRule, "일");
   assert.equal(getPracticeType("subtraction-borrow-2").cardRule, "일, 십");
+  assert.equal(getSessionType(MIXED_ALL_TYPE_ID).label, "전체 유형 랜덤");
 });

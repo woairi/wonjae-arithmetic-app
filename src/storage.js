@@ -13,11 +13,33 @@ function createEmptyStat(typeId) {
 
 export function createEmptySnapshot() {
   return {
-    version: 1,
+    version: 2,
     stats: Object.fromEntries(
       PRACTICE_TYPES.map((type) => [type.id, createEmptyStat(type.id)])
     ),
     history: []
+  };
+}
+
+function normalizeHistoryEntry(entry) {
+  const sessionTypeId = entry?.sessionTypeId ?? entry?.typeId ?? DEFAULT_TYPE_ID;
+
+  return {
+    id: entry?.id ?? crypto.randomUUID(),
+    sessionTypeId,
+    typeId: sessionTypeId,
+    accuracy: Number.isFinite(entry?.accuracy) ? entry.accuracy : 0,
+    correctCount: Number.isFinite(entry?.correctCount) ? entry.correctCount : 0,
+    totalCount: Number.isFinite(entry?.totalCount) ? entry.totalCount : 0,
+    finishedAt: entry?.finishedAt ?? null,
+    source: entry?.source ?? "fresh",
+    wrongTypeIds: Array.isArray(entry?.wrongTypeIds) ? entry.wrongTypeIds : [],
+    typeBreakdown:
+      entry?.typeBreakdown && typeof entry.typeBreakdown === "object" ? entry.typeBreakdown : {},
+    wrongTypeBreakdown:
+      entry?.wrongTypeBreakdown && typeof entry.wrongTypeBreakdown === "object"
+        ? entry.wrongTypeBreakdown
+        : {}
   };
 }
 
@@ -39,9 +61,11 @@ function normalizeSnapshot(rawSnapshot) {
   });
 
   return {
-    version: 1,
+    version: 2,
     stats: nextStats,
-    history: Array.isArray(rawSnapshot.history) ? rawSnapshot.history.slice(0, 20) : []
+    history: Array.isArray(rawSnapshot.history)
+      ? rawSnapshot.history.slice(0, 20).map(normalizeHistoryEntry)
+      : []
   };
 }
 
@@ -70,23 +94,31 @@ export function getAccuracy(stat) {
 
 export function recordSession(snapshot, sessionResult) {
   const nextSnapshot = normalizeSnapshot(snapshot);
-  const currentStat = nextSnapshot.stats[sessionResult.typeId] ?? createEmptyStat(sessionResult.typeId);
+  sessionResult.perTypeStats.forEach((typeStat) => {
+    const currentStat = nextSnapshot.stats[typeStat.typeId] ?? createEmptyStat(typeStat.typeId);
 
-  currentStat.totalAnswered += sessionResult.totalCount;
-  currentStat.totalCorrect += sessionResult.correctCount;
-  currentStat.sessions += 1;
-  currentStat.lastAccuracy = sessionResult.accuracy;
-  currentStat.lastPracticedAt = sessionResult.finishedAt;
-  nextSnapshot.stats[sessionResult.typeId] = currentStat;
+    currentStat.totalAnswered += typeStat.totalAnswered;
+    currentStat.totalCorrect += typeStat.totalCorrect;
+    currentStat.sessions += 1;
+    currentStat.lastAccuracy = Math.round(
+      (typeStat.totalCorrect / typeStat.totalAnswered) * 100
+    );
+    currentStat.lastPracticedAt = sessionResult.finishedAt;
+    nextSnapshot.stats[typeStat.typeId] = currentStat;
+  });
 
   nextSnapshot.history.unshift({
     id: sessionResult.id,
-    typeId: sessionResult.typeId,
+    sessionTypeId: sessionResult.sessionTypeId,
+    typeId: sessionResult.sessionTypeId,
     accuracy: sessionResult.accuracy,
     correctCount: sessionResult.correctCount,
     totalCount: sessionResult.totalCount,
     finishedAt: sessionResult.finishedAt,
-    source: sessionResult.source
+    source: sessionResult.source,
+    wrongTypeIds: sessionResult.wrongTypeIds,
+    typeBreakdown: sessionResult.typeBreakdown,
+    wrongTypeBreakdown: sessionResult.wrongTypeBreakdown
   });
   nextSnapshot.history = nextSnapshot.history.slice(0, 20);
 

@@ -183,6 +183,10 @@ input {
   background: linear-gradient(180deg, rgba(255, 244, 225, 0.96), #ffffff 42%);
 }
 
+.group-mixed {
+  background: linear-gradient(180deg, rgba(223, 241, 255, 0.96), #ffffff 42%);
+}
+
 .group-subtraction {
   background: linear-gradient(180deg, rgba(226, 248, 241, 0.96), #ffffff 42%);
 }
@@ -229,6 +233,12 @@ input {
   color: #9a5c0c;
 }
 
+.group-mixed .type-chip,
+.practice-focus.group-mixed .type-chip {
+  background: rgba(34, 112, 216, 0.12);
+  color: #1654b1;
+}
+
 .group-subtraction .type-chip,
 .practice-focus.group-subtraction .type-chip {
   background: rgba(31, 140, 120, 0.12);
@@ -254,6 +264,10 @@ input {
   border-color: rgba(223, 138, 22, 0.18);
 }
 
+.type-card.group-mixed {
+  border-color: rgba(34, 112, 216, 0.22);
+}
+
 .type-card.group-subtraction {
   border-color: rgba(31, 140, 120, 0.2);
 }
@@ -261,6 +275,11 @@ input {
 .type-card.group-addition.type-card-active {
   background: linear-gradient(135deg, #fff4df, #ffffff);
   border-color: rgba(223, 138, 22, 0.45);
+}
+
+.type-card.group-mixed.type-card-active {
+  background: linear-gradient(135deg, #eaf4ff, #ffffff);
+  border-color: rgba(34, 112, 216, 0.45);
 }
 
 .type-card.group-subtraction.type-card-active {
@@ -293,6 +312,10 @@ input {
 
 .practice-focus.group-addition {
   background: linear-gradient(135deg, var(--addition-soft), #fffdf7);
+}
+
+.practice-focus.group-mixed {
+  background: linear-gradient(135deg, rgba(223, 241, 255, 0.96), #fbfdff);
 }
 
 .practice-focus.group-subtraction {
@@ -343,6 +366,12 @@ input {
   font-family: var(--font-number);
   font-size: clamp(1.8rem, 8vw, 2.4rem);
   line-height: 1.1;
+}
+
+.problem-type-name {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 800;
 }
 
 .problem-board {
@@ -526,6 +555,24 @@ input {
 .small-note {
   margin: 0;
   color: var(--muted);
+}
+
+.type-pill-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.type-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(34, 112, 216, 0.08);
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 800;
 }
 
 .wide-button {

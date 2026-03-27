@@ -1,9 +1,31 @@
-import { DEFAULT_TYPE_ID, PRACTICE_TYPES, SESSION_SIZE, getPracticeType } from "./constants.js";
+import {
+  DEFAULT_TYPE_ID,
+  MIXED_ALL_TYPE_ID,
+  PRACTICE_TYPES,
+  SESSION_SIZE,
+  getPracticeType
+} from "./constants.js";
 
 const POSITION_LABELS = ["일의 자리", "십의 자리", "백의 자리"];
+const PRACTICE_TYPE_IDS = PRACTICE_TYPES.map((type) => type.id);
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function shuffle(items) {
+  const nextItems = [...items];
+
+  for (let index = nextItems.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInt(0, index);
+    [nextItems[index], nextItems[swapIndex]] = [nextItems[swapIndex], nextItems[index]];
+  }
+
+  return nextItems;
+}
+
+function pickRandomPracticeTypeId() {
+  return PRACTICE_TYPE_IDS[randomInt(0, PRACTICE_TYPE_IDS.length - 1)];
 }
 
 function digitsOf(value) {
@@ -238,20 +260,40 @@ const candidateFactories = {
 };
 
 export function generateProblem(typeId = DEFAULT_TYPE_ID) {
-  const candidateFactory = candidateFactories[typeId];
+  const actualTypeId = typeId === MIXED_ALL_TYPE_ID ? pickRandomPracticeTypeId() : typeId;
+  const candidateFactory = candidateFactories[actualTypeId];
 
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const problem = candidateFactory();
-    if (isValidForType(problem, typeId)) {
+    if (isValidForType(problem, actualTypeId)) {
       return problem;
     }
   }
 
-  const practiceType = getPracticeType(typeId);
+  const practiceType = getPracticeType(actualTypeId);
   throw new Error(`${practiceType.label} 문제 생성에 실패했습니다.`);
 }
 
+export function buildMixedTypeSequence(size = SESSION_SIZE) {
+  if (size <= 0) {
+    return [];
+  }
+
+  const guaranteedTypes =
+    size >= PRACTICE_TYPE_IDS.length
+      ? shuffle(PRACTICE_TYPE_IDS)
+      : shuffle(PRACTICE_TYPE_IDS).slice(0, size);
+  const remainingCount = Math.max(size - guaranteedTypes.length, 0);
+  const extraTypes = Array.from({ length: remainingCount }, () => pickRandomPracticeTypeId());
+
+  return shuffle([...guaranteedTypes, ...extraTypes]);
+}
+
 export function generateSessionProblems(typeId, size = SESSION_SIZE) {
+  if (typeId === MIXED_ALL_TYPE_ID) {
+    return buildMixedTypeSequence(size).map((actualTypeId) => generateProblem(actualTypeId));
+  }
+
   return Array.from({ length: size }, () => generateProblem(typeId));
 }
 
@@ -278,6 +320,7 @@ export function enrichProblem(problem) {
 
 export function createFreshSession(typeId, size = SESSION_SIZE) {
   return {
+    sessionTypeId: typeId,
     typeId,
     source: "fresh",
     problems: generateSessionProblems(typeId, size).map(enrichProblem),
@@ -286,9 +329,10 @@ export function createFreshSession(typeId, size = SESSION_SIZE) {
   };
 }
 
-export function createRetrySession(typeId, problems) {
+export function createRetrySession(sessionTypeId, problems) {
   return {
-    typeId,
+    sessionTypeId,
+    typeId: sessionTypeId,
     source: "retry",
     problems: problems.map(resetProblemForRetry),
     currentIndex: 0,

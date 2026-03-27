@@ -1,6 +1,7 @@
 export const SESSION_SIZE = 10;
 export const STORAGE_KEY = "wonjae-arithmetic-app-v1";
 export const PLACE_LABELS = ["천", "백", "십", "일"];
+export const MIXED_ALL_TYPE_ID = "mixed-all";
 
 export const PRACTICE_TYPES = [
   {
@@ -50,8 +51,27 @@ export const PRACTICE_TYPES = [
   }
 ];
 
+export const MIXED_ALL_TYPE = {
+  id: MIXED_ALL_TYPE_ID,
+  group: "섞어 풀기",
+  label: "전체 유형 랜덤",
+  description: "5개 유형이 섞여 나와요.",
+  summary: "5개 실제 유형이 섞여 나오는 연습",
+  cardRule: "랜덤",
+  hint: "이번 문제의 실제 유형을 보고 풀어요."
+};
+
+export const SESSION_TYPE_OPTIONS = [MIXED_ALL_TYPE, ...PRACTICE_TYPES];
 export const DEFAULT_TYPE_ID = PRACTICE_TYPES[0].id;
 
 export function getPracticeType(typeId) {
   return PRACTICE_TYPES.find((type) => type.id === typeId) ?? PRACTICE_TYPES[0];
+}
+
+export function getSessionType(typeId) {
+  return SESSION_TYPE_OPTIONS.find((type) => type.id === typeId) ?? getPracticeType(DEFAULT_TYPE_ID);
+}
+
+export function isMixedSessionType(typeId) {
+  return typeId === MIXED_ALL_TYPE_ID;
 }
