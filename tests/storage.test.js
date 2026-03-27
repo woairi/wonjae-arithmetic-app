@@ -35,10 +35,20 @@ test("recordSession keeps labels and weakest type ordering for summaries", () =>
   });
 
   assert.equal(nextSnapshot.history[0].sessionLabel, "틀린 유형만 다시");
+  assert.equal(nextSnapshot.history[0].source, "focus-types");
+  assert.equal(nextSnapshot.history[0].accuracy, 50);
   assert.deepEqual(nextSnapshot.history[0].focusedTypeIds, [
     "addition-carry-2",
     "subtraction-borrow-2"
   ]);
+  assert.deepEqual(nextSnapshot.history[0].typeBreakdown, {
+    "addition-carry-2": 5,
+    "subtraction-borrow-2": 5
+  });
+  assert.deepEqual(nextSnapshot.history[0].wrongTypeBreakdown, {
+    "addition-carry-2": 3,
+    "subtraction-borrow-2": 2
+  });
   assert.deepEqual(getWeakestTypeIds(nextSnapshot, 2), [
     "addition-carry-2",
     "subtraction-borrow-2"

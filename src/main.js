@@ -31,6 +31,7 @@ const groupedTypes = SESSION_TYPE_OPTIONS.reduce((groups, type) => {
   return groups;
 }, {});
 const PRACTICE_TYPE_ORDER = PRACTICE_TYPES.map((type) => type.id);
+const FULL_PLACE_LABELS = ["천의 자리", "백의 자리", "십의 자리", "일의 자리"];
 const GROUP_META = {
   "섞어 풀기": {
     lead: "여러 유형",
@@ -55,6 +56,7 @@ const GROUP_META = {
 const state = {
   view: "home",
   selectedTypeId: DEFAULT_TYPE_ID,
+  showHints: true,
   snapshot: loadSnapshot(),
   session: null,
   lastResult: null
@@ -83,6 +85,10 @@ function formatDate(dateText) {
 
 function getCurrentProblem() {
   return state.session?.problems[state.session.currentIndex] ?? null;
+}
+
+function getSessionDisplayLabel(sessionLike) {
+  return sessionLike?.sessionLabel ?? getSessionMeta(sessionLike).label;
 }
 
 function getSessionMeta(sessionLike) {
@@ -164,6 +170,48 @@ function formatTypeCountText(typeCounts) {
   return entries
     .map(([typeId, count]) => `${getPracticeType(typeId).label} ${count}문제`)
     .join(" · ");
+}
+
+function getProblemFocusPositions(problem) {
+  if (!problem?.analysis) {
+    return [];
+  }
+
+  return problem.operator === "+"
+    ? problem.analysis.carryPositions
+    : problem.analysis.borrowPositions;
+}
+
+function getProblemFocusText(problem, variant = "look") {
+  const practiceType = getPracticeType(problem.typeId);
+  const positions = getProblemFocusPositions(problem);
+
+  if (positions.length === 0) {
+    return variant === "wrong"
+      ? "자리만 다시 맞춰 보면 돼요."
+      : practiceType.hint;
+  }
+
+  const shortPositions = positions.map((position) => position.replace("의 자리", ""));
+  const action = problem.operator === "+" ? "올림" : "내림";
+
+  if (variant === "wrong") {
+    return `틀린 자리 포인트: ${shortPositions.join(", ")} 자리 ${action}`;
+  }
+
+  return `먼저 볼 자리: ${shortPositions.join(", ")} 자리 ${action}`;
+}
+
+function getHistoryModeLabel(entry) {
+  if (entry.source === "retry") {
+    return "틀린 문제 다시";
+  }
+
+  if (entry.source === "focus-types") {
+    return entry.focusedTypeIds.length > 1 ? "틀린 유형만 다시" : "같은 유형 다시";
+  }
+
+  return isMixedSessionType(entry.sessionTypeId) ? "혼합 모드" : "새 문제";
 }
 
 function renderTypePills(typeCounts, emptyMessage) {
@@ -363,22 +411,46 @@ function renderProblemBoard(problem) {
     3
   );
   const placeLabels = PLACE_LABELS.slice(PLACE_LABELS.length - digitCount);
+  const fullPlaceLabels = FULL_PLACE_LABELS.slice(FULL_PLACE_LABELS.length - digitCount);
   const leftDigits = String(problem.left).padStart(digitCount, " ").split("");
   const rightDigits = String(problem.right).padStart(digitCount, " ").split("");
+  const focusPositions = new Set(state.showHints ? getProblemFocusPositions(problem) : []);
+  const showStrongFocus =
+    state.showHints && problem.submitted && !problem.isCorrect && focusPositions.size > 0;
+
+  function getFocusClass(index) {
+    if (!focusPositions.has(fullPlaceLabels[index])) {
+      return "";
+    }
+
+    return showStrongFocus ? "place-focus-strong" : "place-focus-soft";
+  }
+
+  function renderFocusedDigitCell(value, index) {
+    return renderDigitCell(value).replace(
+      'class="digit-cell',
+      `class="digit-cell ${getFocusClass(index)}`
+    );
+  }
 
   return `
-    <div class="problem-board" style="--digit-columns: ${digitCount}">
+    <div class="problem-board ${state.showHints ? "problem-board-hints" : ""} ${showStrongFocus ? "problem-board-wrong-focus" : ""}" style="--digit-columns: ${digitCount}">
       <div class="place-row">
         <span class="operator-space"></span>
-        ${placeLabels.map((label) => `<span class="place-label">${label}</span>`).join("")}
+        ${placeLabels
+          .map(
+            (label, index) =>
+              `<span class="place-label ${getFocusClass(index)}">${label}</span>`
+          )
+          .join("")}
       </div>
       <div class="digit-row">
         <span class="operator-space"></span>
-        ${leftDigits.map(renderDigitCell).join("")}
+        ${leftDigits.map((value, index) => renderFocusedDigitCell(value, index)).join("")}
       </div>
       <div class="digit-row">
         <span class="operator-mark">${problem.operator}</span>
-        ${rightDigits.map(renderDigitCell).join("")}
+        ${rightDigits.map((value, index) => renderFocusedDigitCell(value, index)).join("")}
       </div>
       <div class="digit-line"></div>
     </div>
@@ -386,13 +458,11 @@ function renderProblemBoard(problem) {
 }
 
 function renderHome() {
-  const recommendedType = getPracticeType(getRecommendedTypeId(state.snapshot));
+  const recommendedType = getSessionType(getRecommendedTypeId(state.snapshot));
   const weakestTypeIds = getWeakestTypeIds(state.snapshot, 2);
   const weakestTypes = weakestTypeIds.map((typeId) => getPracticeType(typeId));
   const recentSummary = getRecentSummary(state.snapshot);
-  const recentSessionLabel = recentSummary
-    ? recentSummary.sessionLabel ?? getSessionType(recentSummary.sessionTypeId).label
-    : null;
+  const recentSessionLabel = recentSummary ? getSessionDisplayLabel(recentSummary) : null;
   const recentPracticeCount = state.snapshot.history.length;
 
   return `
@@ -426,9 +496,9 @@ function renderHome() {
         </article>
 
         <article class="info-card">
-          <p class="card-label">마지막 연습</p>
-          <strong>${recentSummary ? `${recentSummary.correctCount} / ${recentSummary.totalCount}` : "아직 없음"}</strong>
-          <p>${recentSummary ? `${recentSessionLabel} · ${recentSummary.accuracy}% · ${formatDate(recentSummary.finishedAt)}` : "첫 연습을 시작해요."}</p>
+          <p class="card-label">최근 학습 기록</p>
+          <strong>${recentSummary ? recentSessionLabel : "아직 없음"}</strong>
+          <p>${recentSummary ? `${recentSummary.correctCount} / ${recentSummary.totalCount} · ${recentSummary.accuracy}% · ${formatDate(recentSummary.finishedAt)}` : "최근 세션 기록을 여기서 확인해요."}</p>
         </article>
 
         <article class="info-card guardian-card">
@@ -441,6 +511,7 @@ function renderHome() {
 
       <div class="home-actions">
         <button class="secondary-button" data-action="open-type-select">유형 고르기</button>
+        <button class="ghost-button" data-action="open-history">최근 학습 기록</button>
       </div>
     </section>
   `;
@@ -510,6 +581,12 @@ function renderPractice() {
   const practiceType = getPracticeType(currentProblem.typeId);
   const sessionGroupMeta = GROUP_META[sessionType.group];
   const problemGroupMeta = GROUP_META[practiceType.group];
+  const helperMessage = state.showHints
+    ? practiceType.hint
+    : "힌트를 숨겼어요. 먼저 혼자 풀어봐요.";
+  const boardFocusText = currentProblem.submitted && !currentProblem.isCorrect
+    ? getProblemFocusText(currentProblem, "wrong")
+    : getProblemFocusText(currentProblem, "look");
 
   return `
     <section class="screen">
@@ -546,6 +623,22 @@ function renderPractice() {
           <p>${practiceType.summary}</p>
         </div>
 
+        <div class="hint-toolbar">
+          <div>
+            <p class="card-label">세로셈 힌트</p>
+            <p class="hint-copy">${state.showHints ? "자리 포인트를 보드에 같이 보여줘요." : "자리 강조를 숨기고 풀어요."}</p>
+          </div>
+          <button class="ghost-button hint-toggle" data-action="toggle-hints">
+            ${state.showHints ? "힌트 숨기기" : "힌트 보기"}
+          </button>
+        </div>
+
+        ${
+          state.showHints
+            ? `<p class="board-focus-note ${currentProblem.submitted && !currentProblem.isCorrect ? "board-focus-note-wrong" : ""}">${boardFocusText}</p>`
+            : ""
+        }
+
         ${renderProblemBoard(currentProblem)}
 
         <form class="answer-form" data-role="answer-form">
@@ -567,7 +660,7 @@ function renderPractice() {
           ${
             currentProblem.submitted
               ? `<div class="feedback-banner ${currentProblem.isCorrect ? "feedback-correct" : "feedback-wrong"}">${currentProblem.feedback}</div>`
-              : `<p class="helper-copy">${practiceType.hint}</p>`
+              : `<p class="helper-copy ${state.showHints ? "" : "helper-copy-muted"}">${helperMessage}</p>`
           }
           <button class="primary-button" type="submit">
             ${currentProblem.submitted
@@ -577,6 +670,81 @@ function renderPractice() {
               : "확인"}
           </button>
         </form>
+      </div>
+    </section>
+  `;
+}
+
+function renderHistory() {
+  const recentEntries = state.snapshot.history;
+  const latestEntry = recentEntries[0] ?? null;
+
+  return `
+    <section class="screen">
+      <div class="top-bar">
+        <button class="ghost-button" data-action="go-home">홈</button>
+        <span class="top-bar-title">최근 학습 기록</span>
+      </div>
+
+      <header class="section-header">
+        <h2>최근 학습 기록</h2>
+        <p>방금 한 연습과 다시 푼 흐름을 따로 모아봐요.</p>
+      </header>
+
+      <div class="result-grid">
+        <article class="info-card accent-card">
+          <p class="card-label">최근 세션 수</p>
+          <strong>${recentEntries.length}개</strong>
+          <p>${recentEntries.length > 0 ? "최신 20개까지 저장해요." : "아직 저장된 연습이 없어요."}</p>
+        </article>
+
+        <article class="info-card">
+          <p class="card-label">가장 최근</p>
+          <strong>${latestEntry ? `${latestEntry.accuracy}%` : "기록 없음"}</strong>
+          <p>${latestEntry ? `${getSessionDisplayLabel(latestEntry)} · ${formatDate(latestEntry.finishedAt)}` : "첫 연습 뒤에 자동으로 보여요."}</p>
+        </article>
+      </div>
+
+      <section class="history-list">
+        ${
+          recentEntries.length === 0
+            ? `<article class="info-card"><p class="card-label">최근 학습 기록</p><strong>아직 없어요</strong><p>유형을 하나 골라 10문제 풀면 여기에 쌓여요.</p></article>`
+            : recentEntries
+                .map((entry) => {
+                  const sessionMeta = getSessionMeta(entry);
+                  const groupMeta = GROUP_META[sessionMeta.group];
+                  const wrongTypes = Object.keys(entry.wrongTypeBreakdown ?? {}).length;
+
+                  return `
+                    <article class="history-card">
+                      <div class="history-card-top">
+                        <div>
+                          <p class="card-label">${formatDate(entry.finishedAt)}</p>
+                          <strong>${getSessionDisplayLabel(entry)}</strong>
+                        </div>
+                        <div class="history-score">
+                          <span>정확도</span>
+                          <strong>${entry.accuracy}%</strong>
+                        </div>
+                      </div>
+
+                      <div class="type-card-top ${groupMeta?.className ?? ""}">
+                        <span class="type-chip">${groupMeta?.chip ?? sessionMeta.group}</span>
+                        <span class="rule-chip">${getHistoryModeLabel(entry)}</span>
+                      </div>
+
+                      <p class="history-meta">${entry.correctCount} / ${entry.totalCount} 맞음</p>
+                      <p class="history-detail">실제 유형: ${formatTypeCountText(entry.typeBreakdown)}</p>
+                      <p class="history-detail">${wrongTypes > 0 ? `틀린 유형: ${formatTypeCountText(entry.wrongTypeBreakdown)}` : "틀린 유형 없이 마쳤어요."}</p>
+                    </article>
+                  `;
+                })
+                .join("")
+        }
+      </section>
+
+      <div class="bottom-cta">
+        <button class="secondary-button" data-action="open-type-select">유형 고르기</button>
       </div>
     </section>
   `;
@@ -713,6 +881,8 @@ function renderResult() {
 
 function renderApp() {
   switch (state.view) {
+    case "history":
+      return renderHistory();
     case "type-select":
       return renderTypeSelection();
     case "practice":
@@ -752,6 +922,10 @@ appRoot.addEventListener("click", (event) => {
       state.view = "type-select";
       render();
       break;
+    case "open-history":
+      state.view = "history";
+      render();
+      break;
     case "go-home":
       state.view = "home";
       render();
@@ -778,6 +952,10 @@ appRoot.addEventListener("click", (event) => {
         break;
       }
       startFreshSession(state.lastResult?.sessionTypeId ?? state.selectedTypeId);
+      break;
+    case "toggle-hints":
+      state.showHints = !state.showHints;
+      render();
       break;
     default:
       break;
