@@ -1,4 +1,13 @@
-import { DEFAULT_TYPE_ID, PRACTICE_TYPES, STORAGE_KEY } from "./constants.js";
+import {
+  DEFAULT_TYPE_ID,
+  PRACTICE_TYPES,
+  STORAGE_KEY,
+  isMixedSessionType
+} from "./constants.js";
+
+const HISTORY_LIMIT = 20;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const PRACTICE_TYPE_ORDER = PRACTICE_TYPES.map((type) => type.id);
 
 function createEmptyStat(typeId) {
   return {
@@ -66,7 +75,7 @@ function normalizeSnapshot(rawSnapshot) {
     version: 3,
     stats: nextStats,
     history: Array.isArray(rawSnapshot.history)
-      ? rawSnapshot.history.slice(0, 20).map(normalizeHistoryEntry)
+      ? rawSnapshot.history.slice(0, HISTORY_LIMIT).map(normalizeHistoryEntry)
       : []
   };
 }
@@ -124,9 +133,138 @@ export function recordSession(snapshot, sessionResult) {
     typeBreakdown: sessionResult.typeBreakdown,
     wrongTypeBreakdown: sessionResult.wrongTypeBreakdown
   });
-  nextSnapshot.history = nextSnapshot.history.slice(0, 20);
+  nextSnapshot.history = nextSnapshot.history.slice(0, HISTORY_LIMIT);
 
   return nextSnapshot;
+}
+
+function toTimestamp(dateText) {
+  const timestamp = Date.parse(dateText ?? "");
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function isRecentEntry(entry, days, now) {
+  const finishedAt = toTimestamp(entry?.finishedAt);
+  if (finishedAt === null) {
+    return false;
+  }
+
+  const nowTimestamp = now instanceof Date ? now.getTime() : toTimestamp(now);
+  if (nowTimestamp === null) {
+    return false;
+  }
+
+  const threshold = nowTimestamp - days * DAY_IN_MS;
+  return finishedAt >= threshold && finishedAt <= nowTimestamp;
+}
+
+function createRecentTypeStat(typeId) {
+  return {
+    typeId,
+    totalAnswered: 0,
+    totalCorrect: 0,
+    totalWrong: 0,
+    lastPracticedAt: null
+  };
+}
+
+function compareRecentTypeStats(left, right, countKey) {
+  const countGap = right[countKey] - left[countKey];
+  if (countGap !== 0) {
+    return countGap;
+  }
+
+  const accuracyGap = getAccuracy(left) - getAccuracy(right);
+  if (accuracyGap !== 0) {
+    return accuracyGap;
+  }
+
+  const recencyGap = (right.lastPracticedAt ?? "").localeCompare(left.lastPracticedAt ?? "");
+  if (recencyGap !== 0) {
+    return recencyGap;
+  }
+
+  return PRACTICE_TYPE_ORDER.indexOf(left.typeId) - PRACTICE_TYPE_ORDER.indexOf(right.typeId);
+}
+
+function getRecentTypeStatsFromEntries(entries) {
+  const statsByType = Object.fromEntries(
+    PRACTICE_TYPES.map((type) => [type.id, createRecentTypeStat(type.id)])
+  );
+
+  entries.forEach((entry) => {
+    PRACTICE_TYPE_ORDER.forEach((typeId) => {
+      const totalAnswered = Number(entry?.typeBreakdown?.[typeId] ?? 0);
+      if (totalAnswered <= 0) {
+        return;
+      }
+
+      const totalWrong = Number(entry?.wrongTypeBreakdown?.[typeId] ?? 0);
+      const typeStat = statsByType[typeId];
+
+      typeStat.totalAnswered += totalAnswered;
+      typeStat.totalWrong += totalWrong;
+      typeStat.totalCorrect += Math.max(totalAnswered - totalWrong, 0);
+      if ((entry.finishedAt ?? "") > (typeStat.lastPracticedAt ?? "")) {
+        typeStat.lastPracticedAt = entry.finishedAt;
+      }
+    });
+  });
+
+  return PRACTICE_TYPE_ORDER.map((typeId) => statsByType[typeId]).filter(
+    (typeStat) => typeStat.totalAnswered > 0
+  );
+}
+
+export function getRecentHistoryEntries(snapshot, options = {}) {
+  const { days = 7, now = new Date() } = options;
+
+  return (snapshot?.history ?? []).filter((entry) => isRecentEntry(entry, days, now));
+}
+
+export function getRecentTypeStats(snapshot, options = {}) {
+  return getRecentTypeStatsFromEntries(getRecentHistoryEntries(snapshot, options));
+}
+
+export function getRecentSingleTypeSessions(snapshot, typeId, options = {}) {
+  const { limit = 3, days = null, now = new Date() } = options;
+
+  return (snapshot?.history ?? [])
+    .filter((entry) => !isMixedSessionType(entry.sessionTypeId) && entry.sessionTypeId === typeId)
+    .filter((entry) => (days ? isRecentEntry(entry, days, now) : true))
+    .slice(0, limit);
+}
+
+export function getLastSevenDaySummary(snapshot, options = {}) {
+  const recentEntries = getRecentHistoryEntries(snapshot, { days: 7, ...options });
+  const recentTypeStats = getRecentTypeStatsFromEntries(recentEntries);
+  const totalProblemCount = recentEntries.reduce(
+    (sum, entry) => sum + Number(entry.totalCount ?? 0),
+    0
+  );
+  const totalCorrectCount = recentEntries.reduce(
+    (sum, entry) => sum + Number(entry.correctCount ?? 0),
+    0
+  );
+  const mostPracticedTypeId =
+    [...recentTypeStats].sort((left, right) => compareRecentTypeStats(left, right, "totalAnswered"))[0]
+      ?.typeId ?? null;
+  const mostWrongTypeId =
+    [...recentTypeStats]
+      .filter((typeStat) => typeStat.totalWrong > 0)
+      .sort((left, right) => compareRecentTypeStats(left, right, "totalWrong"))[0]?.typeId ?? null;
+
+  return {
+    practiceCount: recentEntries.length,
+    totalProblemCount,
+    totalCorrectCount,
+    averageAccuracy:
+      totalProblemCount > 0 ? Math.round((totalCorrectCount / totalProblemCount) * 100) : null,
+    mostPracticedTypeId,
+    mostWrongTypeId,
+    distinctTypeCount: recentTypeStats.length,
+    typeStats: recentTypeStats
+  };
 }
 
 export function getWeakestTypeId(snapshot) {
@@ -158,7 +296,15 @@ export function getWeakestTypeIds(snapshot, limit = 2) {
 }
 
 export function getRecommendedTypeId(snapshot) {
-  return getWeakestTypeId(snapshot) ?? snapshot.history[0]?.typeId ?? DEFAULT_TYPE_ID;
+  const recentSummary = getLastSevenDaySummary(snapshot);
+
+  return (
+    recentSummary.mostWrongTypeId ??
+    recentSummary.mostPracticedTypeId ??
+    getWeakestTypeId(snapshot) ??
+    snapshot.history[0]?.typeId ??
+    DEFAULT_TYPE_ID
+  );
 }
 
 export function getRecentSummary(snapshot) {

@@ -16,6 +16,7 @@ import {
 } from "./problem-engine.js";
 import {
   HINT_LEVELS,
+  buildHomeRecommendation,
   buildResultRecommendation,
   getBoardFocusText,
   getHintFocusPositions,
@@ -26,7 +27,7 @@ import {
 } from "./learning-support.js";
 import {
   getAccuracy,
-  getRecommendedTypeId,
+  getLastSevenDaySummary,
   getRecentSummary,
   getWeakestTypeIds,
   loadSnapshot,
@@ -206,6 +207,43 @@ function renderAccuracySummary(snapshot) {
         })
         .join("")}
     </div>
+  `;
+}
+
+function getTypeLabel(typeId, emptyLabel = "아직 없음") {
+  return typeId ? getPracticeType(typeId).label : emptyLabel;
+}
+
+function renderWeeklySummaryCard(summary, options = {}) {
+  const {
+    title = "최근 7일 요약",
+    helperCopy = "숫자 먼저 보고 다음 연습을 고르기 좋아요."
+  } = options;
+
+  return `
+    <article class="info-card guardian-card weekly-summary-card">
+      <p class="card-label">${title}</p>
+      <strong>${summary.practiceCount > 0 ? `${summary.practiceCount}회 연습` : "최근 기록 없음"}</strong>
+      <p>${helperCopy}</p>
+      <div class="summary-list">
+        <div class="summary-row">
+          <span>연습 횟수</span>
+          <strong>${summary.practiceCount}회</strong>
+        </div>
+        <div class="summary-row">
+          <span>가장 많이 푼 유형</span>
+          <strong>${getTypeLabel(summary.mostPracticedTypeId)}</strong>
+        </div>
+        <div class="summary-row">
+          <span>가장 많이 틀린 유형</span>
+          <strong>${getTypeLabel(summary.mostWrongTypeId)}</strong>
+        </div>
+        <div class="summary-row">
+          <span>평균 정확도</span>
+          <strong>${summary.averageAccuracy ?? "-"}${summary.averageAccuracy !== null ? "%" : ""}</strong>
+        </div>
+      </div>
+    </article>
   `;
 }
 
@@ -431,12 +469,12 @@ function renderProblemBoard(problem) {
 }
 
 function renderHome() {
-  const recommendedType = getSessionType(getRecommendedTypeId(state.snapshot));
+  const homeRecommendation = buildHomeRecommendation(state.snapshot);
   const weakestTypeIds = getWeakestTypeIds(state.snapshot, 2);
   const weakestTypes = weakestTypeIds.map((typeId) => getPracticeType(typeId));
   const recentSummary = getRecentSummary(state.snapshot);
+  const weeklySummary = getLastSevenDaySummary(state.snapshot);
   const recentSessionLabel = recentSummary ? getSessionDisplayLabel(recentSummary) : null;
-  const recentPracticeCount = state.snapshot.history.length;
 
   return `
     <section class="screen hero-screen">
@@ -452,20 +490,17 @@ function renderHome() {
       <div class="card-grid">
         <article class="info-card accent-card">
           <p class="card-label">오늘 추천</p>
-          <strong>${recommendedType.label}</strong>
-          <p>${recommendedType.description}</p>
+          <strong>${homeRecommendation.title}</strong>
+          <p>${homeRecommendation.message}</p>
+          <p class="recommend-reason">이유: ${homeRecommendation.reason}</p>
         </article>
+
+        ${renderWeeklySummaryCard(weeklySummary)}
 
         <article class="info-card">
           <p class="card-label">가장 약한 유형</p>
           <strong>${weakestTypes.length > 0 ? weakestTypes.map((type) => type.label).join(" · ") : "아직 기록 없음"}</strong>
           <p>${weakestTypes.length > 0 ? "여기부터 다시 보면 좋아요." : "처음이면 3자리 덧셈부터 해요."}</p>
-        </article>
-
-        <article class="info-card">
-          <p class="card-label">최근 연습 횟수</p>
-          <strong>${recentPracticeCount}회</strong>
-          <p>${recentPracticeCount > 0 ? "최근 저장된 연습 기준이에요." : "첫 연습을 시작해요."}</p>
         </article>
 
         <article class="info-card">
@@ -475,9 +510,9 @@ function renderHome() {
         </article>
 
         <article class="info-card guardian-card">
-          <p class="card-label">보호자용 짧은 요약</p>
+          <p class="card-label">누적 정확도</p>
           <strong>유형별 정답률</strong>
-          <p>약한 유형과 오늘 추천을 빠르게 확인해요.</p>
+          <p>최근 7일 카드와 함께 보면 흐름이 더 잘 보여요.</p>
           ${renderAccuracySummary(state.snapshot)}
         </article>
       </div>
@@ -659,6 +694,7 @@ function renderPractice() {
 function renderHistory() {
   const recentEntries = state.snapshot.history;
   const latestEntry = recentEntries[0] ?? null;
+  const weeklySummary = getLastSevenDaySummary(state.snapshot);
 
   return `
     <section class="screen">
@@ -671,6 +707,10 @@ function renderHistory() {
         <h2>최근 학습 기록</h2>
         <p>방금 한 연습과 다시 푼 흐름을 따로 모아봐요.</p>
       </header>
+
+      ${renderWeeklySummaryCard(weeklySummary, {
+        helperCopy: "최근 기록 흐름과 함께 보면 어디가 흔들렸는지 바로 보여요."
+      })}
 
       <div class="result-grid">
         <article class="info-card accent-card">
@@ -852,6 +892,7 @@ function renderResult() {
           <p class="card-label">다음 연습</p>
           <strong>${recommendation.title}</strong>
           <p>${recommendation.message}</p>
+          <p class="recommend-reason">이유: ${recommendation.reason}</p>
           ${renderActionButton(recommendedAction, "primary-button result-primary-action")}
         </article>
       </section>
@@ -934,7 +975,7 @@ appRoot.addEventListener("click", (event) => {
 
   switch (action) {
     case "start-recommended":
-      startFreshSession(getRecommendedTypeId(state.snapshot));
+      startFreshSession(buildHomeRecommendation(state.snapshot).typeId);
       break;
     case "open-type-select":
       state.view = "type-select";

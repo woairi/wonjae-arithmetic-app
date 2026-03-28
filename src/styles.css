@@ -130,6 +130,10 @@ input {
   gap: 10px;
 }
 
+.weekly-summary-card .summary-row {
+  background: rgba(34, 112, 216, 0.07);
+}
+
 .accent-card {
   background: linear-gradient(135deg, var(--surface-soft), #fff6e7);
 }
@@ -658,6 +662,14 @@ input {
 
 .result-recommend-card {
   gap: 10px;
+}
+
+.recommend-reason {
+  margin: 0;
+  color: var(--primary-strong);
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.45;
 }
 
 .result-primary-action {

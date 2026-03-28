@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   createEmptySnapshot,
+  getLastSevenDaySummary,
   getWeakestTypeIds,
   recordSession
 } from "../src/storage.js";
@@ -53,4 +54,61 @@ test("recordSession keeps labels and weakest type ordering for summaries", () =>
     "addition-carry-2",
     "subtraction-borrow-2"
   ]);
+});
+
+test("last seven day summary aggregates practice count, top type, weak type, and accuracy", () => {
+  const snapshot = createEmptySnapshot();
+  snapshot.history = [
+    {
+      id: "recent-1",
+      sessionTypeId: "mixed-all",
+      accuracy: 60,
+      correctCount: 6,
+      totalCount: 10,
+      finishedAt: "2026-03-28T09:00:00.000Z",
+      typeBreakdown: {
+        "addition-carry-2": 6,
+        "subtraction-borrow-2": 4
+      },
+      wrongTypeBreakdown: {
+        "addition-carry-2": 2,
+        "subtraction-borrow-2": 2
+      }
+    },
+    {
+      id: "recent-2",
+      sessionTypeId: "addition-carry-2",
+      accuracy: 80,
+      correctCount: 8,
+      totalCount: 10,
+      finishedAt: "2026-03-25T09:00:00.000Z",
+      typeBreakdown: {
+        "addition-carry-2": 10
+      },
+      wrongTypeBreakdown: {
+        "addition-carry-2": 2
+      }
+    },
+    {
+      id: "old-1",
+      sessionTypeId: "addition-basic",
+      accuracy: 100,
+      correctCount: 10,
+      totalCount: 10,
+      finishedAt: "2026-03-18T09:00:00.000Z",
+      typeBreakdown: {
+        "addition-basic": 10
+      },
+      wrongTypeBreakdown: {}
+    }
+  ];
+
+  const summary = getLastSevenDaySummary(snapshot, {
+    now: new Date("2026-03-28T12:00:00.000Z")
+  });
+
+  assert.equal(summary.practiceCount, 2);
+  assert.equal(summary.mostPracticedTypeId, "addition-carry-2");
+  assert.equal(summary.mostWrongTypeId, "addition-carry-2");
+  assert.equal(summary.averageAccuracy, 70);
 });
