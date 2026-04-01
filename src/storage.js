@@ -30,6 +30,19 @@ export function createEmptySnapshot() {
   };
 }
 
+function sanitizeCountMap(rawMap) {
+  if (!rawMap || typeof rawMap !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(rawMap).filter(
+      ([typeId, count]) =>
+        PRACTICE_TYPE_ORDER.includes(typeId) && Number(count) > 0
+    )
+  );
+}
+
 function normalizeHistoryEntry(entry) {
   const sessionTypeId = entry?.sessionTypeId ?? entry?.typeId ?? DEFAULT_TYPE_ID;
 
@@ -80,6 +93,88 @@ function normalizeSnapshot(rawSnapshot) {
   };
 }
 
+function getEntryTypeBreakdown(entry) {
+  const typeBreakdown = sanitizeCountMap(entry?.typeBreakdown);
+  if (Object.keys(typeBreakdown).length > 0) {
+    return typeBreakdown;
+  }
+
+  if (isMixedSessionType(entry?.sessionTypeId)) {
+    return {};
+  }
+
+  const totalCount = Number(entry?.totalCount ?? 0);
+  if (totalCount <= 0) {
+    return {};
+  }
+
+  return {
+    [entry.sessionTypeId ?? DEFAULT_TYPE_ID]: totalCount
+  };
+}
+
+function getEntryWrongTypeBreakdown(entry, typeBreakdown) {
+  const wrongTypeBreakdown = sanitizeCountMap(entry?.wrongTypeBreakdown);
+  if (Object.keys(wrongTypeBreakdown).length > 0) {
+    return wrongTypeBreakdown;
+  }
+
+  if (isMixedSessionType(entry?.sessionTypeId)) {
+    return {};
+  }
+
+  const totalCount = Number(typeBreakdown[entry.sessionTypeId] ?? entry?.totalCount ?? 0);
+  const correctCount = Number(entry?.correctCount ?? 0);
+  const wrongCount = Math.max(totalCount - correctCount, 0);
+
+  return wrongCount > 0
+    ? {
+        [entry.sessionTypeId ?? DEFAULT_TYPE_ID]: wrongCount
+      }
+    : {};
+}
+
+function buildStatsFromHistory(history) {
+  const stats = Object.fromEntries(
+    PRACTICE_TYPES.map((type) => [type.id, createEmptyStat(type.id)])
+  );
+
+  [...history]
+    .sort((left, right) => (left.finishedAt ?? "").localeCompare(right.finishedAt ?? ""))
+    .forEach((entry) => {
+      const typeBreakdown = getEntryTypeBreakdown(entry);
+      const wrongTypeBreakdown = getEntryWrongTypeBreakdown(entry, typeBreakdown);
+
+      Object.entries(typeBreakdown).forEach(([typeId, totalAnswered]) => {
+        const totalWrong = Number(wrongTypeBreakdown[typeId] ?? 0);
+        const totalCorrect = Math.max(Number(totalAnswered) - totalWrong, 0);
+        const typeStat = stats[typeId] ?? createEmptyStat(typeId);
+
+        typeStat.totalAnswered += Number(totalAnswered);
+        typeStat.totalCorrect += totalCorrect;
+        typeStat.sessions += 1;
+        typeStat.lastAccuracy =
+          Number(totalAnswered) > 0
+            ? Math.round((totalCorrect / Number(totalAnswered)) * 100)
+            : 0;
+        typeStat.lastPracticedAt = entry.finishedAt ?? typeStat.lastPracticedAt;
+        stats[typeId] = typeStat;
+      });
+    });
+
+  return stats;
+}
+
+function createSnapshotWithHistory(history) {
+  const normalizedHistory = history.slice(0, HISTORY_LIMIT).map(normalizeHistoryEntry);
+
+  return {
+    version: 3,
+    stats: buildStatsFromHistory(normalizedHistory),
+    history: normalizedHistory
+  };
+}
+
 export function loadSnapshot() {
   try {
     const rawText = localStorage.getItem(STORAGE_KEY);
@@ -105,37 +200,26 @@ export function getAccuracy(stat) {
 
 export function recordSession(snapshot, sessionResult) {
   const nextSnapshot = normalizeSnapshot(snapshot);
-  sessionResult.perTypeStats.forEach((typeStat) => {
-    const currentStat = nextSnapshot.stats[typeStat.typeId] ?? createEmptyStat(typeStat.typeId);
+  const nextHistory = [
+    {
+      id: sessionResult.id,
+      sessionTypeId: sessionResult.sessionTypeId,
+      typeId: sessionResult.sessionTypeId,
+      sessionLabel: sessionResult.sessionMeta?.label ?? null,
+      accuracy: sessionResult.accuracy,
+      correctCount: sessionResult.correctCount,
+      totalCount: sessionResult.totalCount,
+      finishedAt: sessionResult.finishedAt,
+      source: sessionResult.source,
+      focusedTypeIds: sessionResult.focusedTypeIds ?? [],
+      wrongTypeIds: sessionResult.wrongTypeIds,
+      typeBreakdown: sessionResult.typeBreakdown,
+      wrongTypeBreakdown: sessionResult.wrongTypeBreakdown
+    },
+    ...nextSnapshot.history
+  ];
 
-    currentStat.totalAnswered += typeStat.totalAnswered;
-    currentStat.totalCorrect += typeStat.totalCorrect;
-    currentStat.sessions += 1;
-    currentStat.lastAccuracy = Math.round(
-      (typeStat.totalCorrect / typeStat.totalAnswered) * 100
-    );
-    currentStat.lastPracticedAt = sessionResult.finishedAt;
-    nextSnapshot.stats[typeStat.typeId] = currentStat;
-  });
-
-  nextSnapshot.history.unshift({
-    id: sessionResult.id,
-    sessionTypeId: sessionResult.sessionTypeId,
-    typeId: sessionResult.sessionTypeId,
-    sessionLabel: sessionResult.sessionMeta?.label ?? null,
-    accuracy: sessionResult.accuracy,
-    correctCount: sessionResult.correctCount,
-    totalCount: sessionResult.totalCount,
-    finishedAt: sessionResult.finishedAt,
-    source: sessionResult.source,
-    focusedTypeIds: sessionResult.focusedTypeIds ?? [],
-    wrongTypeIds: sessionResult.wrongTypeIds,
-    typeBreakdown: sessionResult.typeBreakdown,
-    wrongTypeBreakdown: sessionResult.wrongTypeBreakdown
-  });
-  nextSnapshot.history = nextSnapshot.history.slice(0, HISTORY_LIMIT);
-
-  return nextSnapshot;
+  return createSnapshotWithHistory(nextHistory);
 }
 
 function toTimestamp(dateText) {
@@ -269,6 +353,25 @@ export function getLastSevenDaySummary(snapshot, options = {}) {
 
 export function getWeakestTypeId(snapshot) {
   return getWeakestTypeIds(snapshot, 1)[0] ?? null;
+}
+
+export function clearHistory() {
+  return createSnapshotWithHistory([]);
+}
+
+export function clearRecentHistory(snapshot, options = {}) {
+  const { days = 7, now = new Date() } = options;
+  const nextSnapshot = normalizeSnapshot(snapshot);
+  const nextHistory = nextSnapshot.history.filter((entry) => !isRecentEntry(entry, days, now));
+
+  return createSnapshotWithHistory(nextHistory);
+}
+
+export function removeHistoryEntry(snapshot, entryId) {
+  const nextSnapshot = normalizeSnapshot(snapshot);
+  return createSnapshotWithHistory(
+    nextSnapshot.history.filter((entry) => entry.id !== entryId)
+  );
 }
 
 export function getWeakestTypeIds(snapshot, limit = 2) {

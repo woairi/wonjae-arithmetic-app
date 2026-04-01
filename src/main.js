@@ -26,12 +26,15 @@ import {
   getWeakTypeStats
 } from "./learning-support.js";
 import {
+  clearHistory,
+  clearRecentHistory,
   getAccuracy,
   getLastSevenDaySummary,
   getRecentSummary,
   getWeakestTypeIds,
   loadSnapshot,
   recordSession,
+  removeHistoryEntry,
   saveSnapshot
 } from "./storage.js";
 
@@ -70,8 +73,10 @@ const state = {
   hintLevel: 1,
   snapshot: loadSnapshot(),
   session: null,
-  lastResult: null
+  lastResult: null,
+  pendingHistoryAction: null
 };
+let autoAdvanceTimerId = null;
 
 function escapeHtml(text) {
   return String(text)
@@ -94,6 +99,13 @@ function formatDate(dateText) {
   }).format(new Date(dateText));
 }
 
+function clearAutoAdvanceTimer() {
+  if (autoAdvanceTimerId) {
+    clearTimeout(autoAdvanceTimerId);
+    autoAdvanceTimerId = null;
+  }
+}
+
 function getCurrentProblem() {
   return state.session?.problems[state.session.currentIndex] ?? null;
 }
@@ -108,6 +120,10 @@ function getSessionMeta(sessionLike) {
   }
 
   return getSessionType(sessionLike?.sessionTypeId ?? DEFAULT_TYPE_ID);
+}
+
+function clearPendingHistoryAction() {
+  state.pendingHistoryAction = null;
 }
 
 function getSortedTypeEntries(typeCounts) {
@@ -255,13 +271,16 @@ function getActionSignature(action) {
   ].join("|");
 }
 
-function renderActionButton(action, className = "secondary-button") {
+function renderActionButton(action, className = "secondary-button", options = {}) {
+  const { autofocus = false } = options;
+
   return `
     <button
       class="${className}"
       data-action="${action.action}"
       ${action.typeId ? `data-type-id="${action.typeId}"` : ""}
       ${action.typeIds?.length ? `data-type-ids="${action.typeIds.join(",")}"` : ""}
+      ${autofocus ? 'data-autofocus="true"' : ""}
     >
       ${action.label}
     </button>
@@ -288,6 +307,63 @@ function renderWeakTypeReview(typeStats) {
           `;
         })
         .join("")}
+    </div>
+  `;
+}
+
+function getHistoryActionSummary(action) {
+  if (!action) {
+    return null;
+  }
+
+  switch (action.kind) {
+    case "clear-recent":
+      return {
+        title: "최근 7일 기록 지우기",
+        message:
+          "최근 7일 연습 기록과 최근 7일 요약을 지웁니다. 남는 기록만 다시 계산해 보여줘요.",
+        confirmLabel: "최근 7일 기록 지우기"
+      };
+    case "clear-all":
+      return {
+        title: "전체 기록 지우기",
+        message:
+          "저장된 모든 연습 기록과 누적 정확도를 모두 지웁니다. 앱이 처음 상태로 돌아갑니다.",
+        confirmLabel: "전체 기록 지우기"
+      };
+    case "delete-session":
+      return {
+        title: "이 세션 삭제",
+        message:
+          "이 연습 기록 하나만 지웁니다. 남은 기록 기준으로 정확도와 요약을 다시 계산합니다.",
+        confirmLabel: "이 세션 삭제"
+      };
+    default:
+      return null;
+  }
+}
+
+function renderHistoryActionConfirm(action, options = {}) {
+  const summary = getHistoryActionSummary(action);
+  if (!summary) {
+    return "";
+  }
+
+  const { inline = false } = options;
+
+  return `
+    <div class="danger-confirm ${inline ? "danger-confirm-inline" : ""}">
+      <p class="card-label">${summary.title}</p>
+      <strong>${summary.title}</strong>
+      <p>${summary.message}</p>
+      <div class="inline-actions">
+        <button class="ghost-button wide-button" data-action="cancel-history-action" data-autofocus="true">
+          취소
+        </button>
+        <button class="danger-button wide-button" data-action="confirm-history-action">
+          ${summary.confirmLabel}
+        </button>
+      </div>
     </div>
   `;
 }
@@ -321,6 +397,8 @@ function createSessionResult(session) {
 }
 
 function startFreshSession(typeId) {
+  clearAutoAdvanceTimer();
+  clearPendingHistoryAction();
   state.selectedTypeId = typeId;
   state.session = createFreshSession(typeId, SESSION_SIZE);
   state.lastResult = null;
@@ -334,6 +412,8 @@ function startFocusedTypeSession(typeIds) {
     return;
   }
 
+  clearAutoAdvanceTimer();
+  clearPendingHistoryAction();
   state.selectedTypeId = filteredTypeIds[0];
   state.session = createFocusedTypeSession(filteredTypeIds, SESSION_SIZE);
   state.lastResult = null;
@@ -346,6 +426,8 @@ function startRetrySession() {
     return;
   }
 
+  clearAutoAdvanceTimer();
+  clearPendingHistoryAction();
   state.session = createRetrySession(
     state.lastResult.sessionTypeId,
     state.lastResult.wrongProblems,
@@ -356,6 +438,7 @@ function startRetrySession() {
 }
 
 function finishSession() {
+  clearAutoAdvanceTimer();
   const sessionResult = createSessionResult(state.session);
   state.snapshot = recordSession(state.snapshot, sessionResult);
   saveSnapshot(state.snapshot);
@@ -370,6 +453,8 @@ function goToNextProblem() {
   if (!state.session) {
     return;
   }
+
+  clearAutoAdvanceTimer();
 
   if (state.session.currentIndex === state.session.problems.length - 1) {
     finishSession();
@@ -404,9 +489,35 @@ function handleAnswerSubmit() {
   currentProblem.submitted = true;
   currentProblem.isCorrect = numericAnswer === currentProblem.answer;
   currentProblem.feedback = currentProblem.isCorrect
-    ? "맞았어요. 다음!"
+    ? state.session.currentIndex === state.session.problems.length - 1
+      ? "맞았어요. 잠깐 뒤 결과를 보여줘요."
+      : "맞았어요. 잠깐 뒤 다음 문제로 가요."
     : `정답 ${currentProblem.answer}. ${getHintMessage(currentProblem)}`;
   state.session.validationMessage = "";
+  render();
+}
+
+function requestHistoryAction(action) {
+  state.pendingHistoryAction = action;
+  render();
+}
+
+function applyHistoryAction() {
+  const pendingAction = state.pendingHistoryAction;
+  if (!pendingAction) {
+    return;
+  }
+
+  if (pendingAction.kind === "clear-all") {
+    state.snapshot = clearHistory();
+  } else if (pendingAction.kind === "clear-recent") {
+    state.snapshot = clearRecentHistory(state.snapshot);
+  } else if (pendingAction.kind === "delete-session" && pendingAction.entryId) {
+    state.snapshot = removeHistoryEntry(state.snapshot, pendingAction.entryId);
+  }
+
+  saveSnapshot(state.snapshot);
+  clearPendingHistoryAction();
   render();
 }
 
@@ -482,7 +593,7 @@ function renderHome() {
         <p class="eyebrow">원재 연산앱</p>
         <h1>오늘도<br />차근차근 풀어요.</h1>
         <p class="hero-copy">큰 숫자로 보고, 10문제만 풀어요.</p>
-        <button class="primary-button" data-action="start-recommended">
+        <button class="primary-button" data-action="start-recommended" data-autofocus="true">
           바로 시작
         </button>
       </div>
@@ -507,6 +618,18 @@ function renderHome() {
           <p class="card-label">최근 학습 기록</p>
           <strong>${recentSummary ? recentSessionLabel : "아직 없음"}</strong>
           <p>${recentSummary ? `${recentSummary.correctCount} / ${recentSummary.totalCount} · ${recentSummary.accuracy}% · ${formatDate(recentSummary.finishedAt)}` : "최근 세션 기록을 여기서 확인해요."}</p>
+          <div class="inline-actions">
+            <button class="ghost-button wide-button" data-action="open-history">자세히 보기</button>
+          </div>
+        </article>
+
+        <article class="info-card history-manage-card">
+          <p class="card-label">기록 정리</p>
+          <strong>${recentSummary ? "최근 기록이나 전체 기록을 정리할 수 있어요." : "기록이 생기면 여기서 정리해요."}</strong>
+          <p>보호자 요약과는 분리해서 최근 학습 기록 화면에서 정리할 수 있어요.</p>
+          <div class="inline-actions">
+            <button class="ghost-button wide-button" data-action="open-history">기록 정리 열기</button>
+          </div>
         </article>
 
         <article class="info-card guardian-card">
@@ -575,7 +698,7 @@ function renderTypeSelection() {
         .join("")}
 
       <div class="bottom-cta">
-        <button class="primary-button" data-action="start-selected">
+        <button class="primary-button" data-action="start-selected" data-autofocus="true">
           이걸로 10문제 풀기
         </button>
       </div>
@@ -664,6 +787,7 @@ function renderPractice() {
             class="answer-input"
             inputmode="numeric"
             autocomplete="off"
+            enterkeyhint="done"
             placeholder="답 쓰기"
             value="${escapeHtml(currentProblem.inputValue)}"
             ${currentProblem.submitted ? "disabled" : ""}
@@ -678,13 +802,26 @@ function renderPractice() {
               ? `<div class="feedback-banner ${currentProblem.isCorrect ? "feedback-correct" : "feedback-wrong"}">${currentProblem.feedback}</div>`
               : `<p class="helper-copy ${state.hintLevel > 0 ? "" : "helper-copy-muted"}">${helperMessage}</p>`
           }
-          <button class="primary-button" type="submit">
+          <button class="primary-button" type="submit" ${currentProblem.submitted ? 'data-autofocus="true"' : ""}>
             ${currentProblem.submitted
-              ? state.session.currentIndex === state.session.problems.length - 1
-                ? "결과 보기"
-                : "다음"
+              ? currentProblem.isCorrect
+                ? state.session.currentIndex === state.session.problems.length - 1
+                  ? "지금 결과 보기"
+                  : "지금 다음 문제"
+                : state.session.currentIndex === state.session.problems.length - 1
+                  ? "결과 보기"
+                  : "다음 문제"
               : "확인"}
           </button>
+          ${
+            currentProblem.submitted && currentProblem.isCorrect
+              ? `<p class="small-note next-step-note">${
+                  state.session.currentIndex === state.session.problems.length - 1
+                    ? "자동으로 결과로 넘어가요."
+                    : "자동으로 다음 문제로 넘어가요."
+                }</p>`
+              : ""
+          }
         </form>
       </div>
     </section>
@@ -695,6 +832,7 @@ function renderHistory() {
   const recentEntries = state.snapshot.history;
   const latestEntry = recentEntries[0] ?? null;
   const weeklySummary = getLastSevenDaySummary(state.snapshot);
+  const pendingAction = state.pendingHistoryAction;
 
   return `
     <section class="screen">
@@ -725,6 +863,28 @@ function renderHistory() {
           <p>${latestEntry ? `${getSessionDisplayLabel(latestEntry)} · ${formatDate(latestEntry.finishedAt)}` : "첫 연습 뒤에 자동으로 보여요."}</p>
         </article>
       </div>
+
+      <section class="result-section">
+        <h3>기록 정리</h3>
+        <article class="info-card history-manage-card">
+          <p class="card-label">보호자용 정리</p>
+          <strong>필요한 기록만 지우고 요약을 다시 맞춰요.</strong>
+          <p>지우기 전에 한 번 더 확인해서 실수로 기록이 없어지지 않게 했어요.</p>
+          <div class="inline-actions">
+            <button class="ghost-button wide-button" data-action="request-clear-recent">
+              최근 7일 기록 지우기
+            </button>
+            <button class="danger-button wide-button" data-action="request-clear-all">
+              전체 기록 지우기
+            </button>
+          </div>
+          ${
+            pendingAction && pendingAction.kind !== "delete-session"
+              ? renderHistoryActionConfirm(pendingAction)
+              : ""
+          }
+        </article>
+      </section>
 
       <section class="history-list">
         ${
@@ -757,6 +917,20 @@ function renderHistory() {
                       <p class="history-meta">${entry.correctCount} / ${entry.totalCount} 맞음</p>
                       <p class="history-detail">실제 유형: ${formatTypeCountText(entry.typeBreakdown)}</p>
                       <p class="history-detail">${wrongTypes > 0 ? `틀린 유형: ${formatTypeCountText(entry.wrongTypeBreakdown)}` : "틀린 유형 없이 마쳤어요."}</p>
+                      <div class="inline-actions">
+                        <button
+                          class="ghost-button wide-button"
+                          data-action="request-delete-session"
+                          data-entry-id="${entry.id}"
+                        >
+                          이 기록 삭제
+                        </button>
+                      </div>
+                      ${
+                        pendingAction?.kind === "delete-session" && pendingAction.entryId === entry.id
+                          ? renderHistoryActionConfirm(pendingAction, { inline: true })
+                          : ""
+                      }
                     </article>
                   `;
                 })
@@ -872,6 +1046,16 @@ function renderResult() {
         <p>${wrongCountMessage}</p>
       </div>
 
+      <article class="info-card result-focus-card result-recommend-card quick-next-card">
+        <p class="card-label">바로 이어서</p>
+        <strong>${recommendation.title}</strong>
+        <p>${recommendation.message}</p>
+        <p class="recommend-reason">이유: ${recommendation.reason}</p>
+        ${renderActionButton(recommendedAction, "primary-button result-primary-action", {
+          autofocus: true
+        })}
+      </article>
+
       <div class="result-grid">
         <article class="info-card accent-card">
           <p class="card-label">이번</p>
@@ -885,17 +1069,6 @@ function renderResult() {
           <p>${isMixedLikeSession ? formatTypeCountText(state.lastResult.typeBreakdown) : `${cumulativeStat.sessions}번 연습했어요.`}</p>
         </article>
       </div>
-
-      <section class="result-section">
-        <h3>다음 추천</h3>
-        <article class="info-card result-focus-card result-recommend-card">
-          <p class="card-label">다음 연습</p>
-          <strong>${recommendation.title}</strong>
-          <p>${recommendation.message}</p>
-          <p class="recommend-reason">이유: ${recommendation.reason}</p>
-          ${renderActionButton(recommendedAction, "primary-button result-primary-action")}
-        </article>
-      </section>
 
       <section class="result-section">
         <h3>이번에 특히 다시 볼 유형</h3>
@@ -954,13 +1127,43 @@ function renderApp() {
   }
 }
 
+function syncAutoAdvance() {
+  clearAutoAdvanceTimer();
+
+  const currentProblem = getCurrentProblem();
+  if (
+    state.view !== "practice" ||
+    !state.session ||
+    !currentProblem ||
+    !currentProblem.submitted ||
+    !currentProblem.isCorrect
+  ) {
+    return;
+  }
+
+  autoAdvanceTimerId = setTimeout(() => {
+    autoAdvanceTimerId = null;
+    goToNextProblem();
+  }, 850);
+}
+
 function render() {
   appRoot.innerHTML = renderApp();
 
   const answerInput = appRoot.querySelector("#answer");
   if (answerInput && !answerInput.disabled) {
     answerInput.focus();
+    answerInput.select();
+    syncAutoAdvance();
+    return;
   }
+
+  const autofocusTarget = appRoot.querySelector("[data-autofocus='true']");
+  if (autofocusTarget instanceof HTMLElement) {
+    autofocusTarget.focus();
+  }
+
+  syncAutoAdvance();
 }
 
 appRoot.addEventListener("click", (event) => {
@@ -972,20 +1175,24 @@ appRoot.addEventListener("click", (event) => {
   const action = button.dataset.action;
   const typeId = button.dataset.typeId;
   const typeIds = button.dataset.typeIds?.split(",") ?? [];
+  const entryId = button.dataset.entryId;
 
   switch (action) {
     case "start-recommended":
       startFreshSession(buildHomeRecommendation(state.snapshot).typeId);
       break;
     case "open-type-select":
+      clearPendingHistoryAction();
       state.view = "type-select";
       render();
       break;
     case "open-history":
+      clearPendingHistoryAction();
       state.view = "history";
       render();
       break;
     case "go-home":
+      clearPendingHistoryAction();
       state.view = "home";
       render();
       break;
@@ -1016,6 +1223,22 @@ appRoot.addEventListener("click", (event) => {
       state.hintLevel = Number(button.dataset.hintLevel ?? 0);
       render();
       break;
+    case "request-clear-recent":
+      requestHistoryAction({ kind: "clear-recent" });
+      break;
+    case "request-clear-all":
+      requestHistoryAction({ kind: "clear-all" });
+      break;
+    case "request-delete-session":
+      requestHistoryAction({ kind: "delete-session", entryId });
+      break;
+    case "cancel-history-action":
+      clearPendingHistoryAction();
+      render();
+      break;
+    case "confirm-history-action":
+      applyHistoryAction();
+      break;
     default:
       break;
   }
@@ -1029,6 +1252,8 @@ appRoot.addEventListener("input", (event) => {
 
   const currentProblem = getCurrentProblem();
   currentProblem.inputValue = answerInput.value.replace(/[^\d-]/g, "");
+  answerInput.value = currentProblem.inputValue;
+  state.session.validationMessage = "";
 });
 
 appRoot.addEventListener("submit", (event) => {
